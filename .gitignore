@@ -1,0 +1,35 @@
+# ---- secrets / env ----
+.env
+.env.*
+!.env.example
+
+# ---- node / next ----
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+
+# ---- data / db ----
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+
+# ---- logs ----
+*.log
+npm-debug.log*
+
+# ---- os / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
