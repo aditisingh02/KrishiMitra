@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import settings
+from app.core.db import dispose_engine
 from app.services import monitor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    await dispose_engine()
 
 
 app = FastAPI(

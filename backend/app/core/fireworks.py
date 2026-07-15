@@ -98,6 +98,24 @@ class FireworksClient:
         )
         return _safe_json(content)
 
+    async def embed(self, text: str, *, model: str | None = None) -> list[float]:
+        """Return an embedding vector for `text` (OpenAI-compatible /embeddings).
+
+        Powers the pgvector long-term memory. The returned vector length must match
+        `settings.embed_dim`; if you change the embedding model, update that too.
+        """
+        payload = {"model": model or settings.model_embed, "input": text}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{self._base}/embeddings",
+                headers=self._headers,
+                json=payload,
+            )
+        if resp.status_code != 200:
+            logger.error("Fireworks embed error %s: %s", resp.status_code, resp.text[:500])
+            raise FireworksError(f"Fireworks embed {resp.status_code}: {resp.text[:200]}")
+        return resp.json()["data"][0]["embedding"]
+
     async def vision(
         self,
         prompt: str,

@@ -41,15 +41,16 @@ async def ensure_coords(farm_id: str, farm: dict[str, Any]) -> dict[str, Any]:
         coords = await weather.geocode(location)
     except weather.ExternalDataError:
         return farm
-    return memory.update_farm({"lat": coords["lat"], "lon": coords["lon"]}, farm_id)
+    return await memory.update_farm({"lat": coords["lat"], "lon": coords["lon"]}, farm_id)
 
 
 async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> dict[str, Any]:
-    farm = memory.get_farm(farm_id)
+    farm = await memory.get_farm(farm_id)
     lang = languages.info(farm.get("language"))
+    farm_ctx = await memory.context_blob(farm_id)
     prompt = (
         f"TARGET LANGUAGE for explanation_local: {languages.name(farm.get('language'))}\n"
-        f"Farm context: {memory.context_blob(farm_id)}\n"
+        f"Farm context: {farm_ctx}\n"
         f"Farmer note: {note or 'none'}\n"
         "Analyze this crop photo and respond in the required JSON schema."
     )
@@ -57,7 +58,16 @@ async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> d
         prompt, image_data_url, system=prompts.VISION_DIAGNOSIS, model=settings.model_vision
     )
     if isinstance(result, dict) and result.get("issue") and result.get("category") != "healthy":
-        memory.record_disease(result["issue"], result.get("crop_guess", "crop"), farm_id)
+        crop_guess = result.get("crop_guess", "crop")
+        await memory.record_disease(result["issue"], crop_guess, farm_id)
+        # store the diagnosis as recallable long-term memory
+        remedy = (result.get("natural_treatment") or {}).get("remedy", "")
+        await memory.add_memory(
+            farm_id,
+            "diagnosis",
+            f"{result['issue']} on {crop_guess} ({result.get('severity', '?')} severity). {remedy}".strip(),
+            {"issue": result["issue"], "crop": crop_guess, "severity": result.get("severity")},
+        )
     if isinstance(result, dict):
         result["language"] = lang
         return result
@@ -74,12 +84,13 @@ async def read_soil_card(image_data_url: str, farm_id: str) -> dict[str, Any]:
     )
     if isinstance(result, dict) and result.get("readable") and not result.get("_parse_error"):
         soil = {k: v for k, v in result.items() if k not in {"readable", "_raw", "_parse_error"} and v is not None}
-        farm = memory.get_farm(farm_id)
+        farm = await memory.get_farm(farm_id)
         merged = {**farm.get("soil", {}), **soil}
-        memory.update_farm({"soil": merged}, farm_id)
-        memory.add_event("soil_card", "Soil Health Card imported", soil, farm_id)
+        await memory.update_farm({"soil": merged}, farm_id)
+        await memory.add_event("soil_card", "Soil Health Card imported", soil, farm_id)
         return {"soil": merged, "extracted": result}
-    return {"soil": memory.get_farm(farm_id).get("soil", {}), "extracted": result}
+    farm = await memory.get_farm(farm_id)
+    return {"soil": farm.get("soil", {}), "extracted": result}
 
 
 async def cropping_design(land: str, location: str, goals: str) -> dict[str, Any]:
@@ -89,16 +100,17 @@ async def cropping_design(land: str, location: str, goals: str) -> dict[str, Any
 
 
 async def weekly_plan(farm_id: str, focus: str = "") -> dict[str, Any]:
-    farm = await ensure_coords(farm_id, memory.get_farm(farm_id))
+    farm = await ensure_coords(farm_id, await memory.get_farm(farm_id))
     weather_blob = "unavailable"
     if farm.get("lat") is not None and farm.get("lon") is not None:
         try:
             weather_blob = json.dumps(await weather.get_forecast(farm["lat"], farm["lon"]))
         except weather.ExternalDataError as e:
             weather_blob = str(e)
+    recent = await memory.recent_events(5, farm_id)
     user = (
         f"FARM:\n{json.dumps(farm)}\n\nFORECAST:\n{weather_blob}\n\n"
-        f"RECENT:\n{json.dumps(memory.recent_events(5, farm_id))}\n\nFOCUS: {focus or 'general'}"
+        f"RECENT:\n{json.dumps(recent)}\n\nFOCUS: {focus or 'general'}"
     )
     return await fireworks.chat_json(prompts.WEEKLY_COACH, user, model=settings.model_agent, max_tokens=1400)
 
@@ -115,7 +127,7 @@ async def dashboard(farm_id: str, force: bool = False) -> dict[str, Any]:
         if hit and time.time() - hit[0] < settings.dashboard_cache_ttl_minutes * 60:
             return hit[1]
 
-    farm = await ensure_coords(farm_id, memory.get_farm(farm_id))
+    farm = await ensure_coords(farm_id, await memory.get_farm(farm_id))
     crops = [c["name"] if isinstance(c, dict) else c for c in farm.get("crops", [])]
 
     # Every external section fails independently - the dashboard must never 500,
@@ -141,10 +153,11 @@ async def dashboard(farm_id: str, force: bool = False) -> dict[str, Any]:
     async def _risk() -> dict[str, Any]:
         if not fc:
             return {}
+        recent = await memory.recent_events(5, farm_id)
         return await fireworks.chat_json(
             prompts.RISK,
             f"FARM:\n{json.dumps(farm)}\n\nFORECAST:\n{json.dumps(fc)}\n\n"
-            f"RECENT:\n{json.dumps(memory.recent_events(5, farm_id))}\n\n"
+            f"RECENT:\n{json.dumps(recent)}\n\n"
             "Proactively assess the dominant risk for the next 3-5 days.",
             model=settings.model_fast,
             max_tokens=700,
@@ -224,6 +237,7 @@ async def dashboard(farm_id: str, force: bool = False) -> dict[str, Any]:
         if fc and fc.get("summary"):
             fc = {**fc, "summary": tr.get(fc["summary"], fc["summary"])}
 
+    recent_activity = await memory.recent_events(6, farm_id)
     result = {
         "farm": farm,
         "metrics": {
@@ -238,7 +252,7 @@ async def dashboard(farm_id: str, force: bool = False) -> dict[str, Any]:
         "weather": fc or {"days": [], "summary": weather_error or "", "error": weather_error},
         "market": {"items": market_items, "error": market_error},
         "alerts": alerts,
-        "recent_activity": memory.recent_events(6, farm_id),
+        "recent_activity": recent_activity,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     _dashboard_cache[farm_id] = (time.time(), result)

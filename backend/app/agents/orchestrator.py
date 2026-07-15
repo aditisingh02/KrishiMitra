@@ -92,9 +92,10 @@ async def _run_risk(query: str, farm: dict[str, Any], farm_id: str, wx: dict | N
     else:
         lat, lon = _coords(farm)
         fc = await weather.get_forecast(lat, lon)
+    recent = await memory.recent_events(5, farm_id)
     user = (
         f"FARM:\n{json.dumps(farm)}\n\nFORECAST:\n{json.dumps(fc)}\n\n"
-        f"RECENT ACTIVITY:\n{json.dumps(memory.recent_events(5, farm_id))}\n\nREQUEST:\n{query}"
+        f"RECENT ACTIVITY:\n{json.dumps(recent)}\n\nREQUEST:\n{query}"
     )
     return await fireworks.chat_json(prompts.RISK, user, model=settings.model_agent)
 
@@ -103,8 +104,18 @@ async def _run_risk(query: str, farm: dict[str, Any], farm_id: str, wx: dict | N
 async def consult(query: str, farm_id: str) -> dict[str, Any]:
     from app.agents.flows import ensure_coords  # local import avoids any cycle
 
-    farm = await ensure_coords(farm_id, memory.get_farm(farm_id))
-    farm_ctx = memory.context_blob(farm_id)
+    farm = await ensure_coords(farm_id, await memory.get_farm(farm_id))
+    farm_ctx = await memory.context_blob(farm_id)
+
+    # Semantic long-term recall: relevant past consults/diagnoses for this farm.
+    past = await memory.recall(farm_id, query)
+    past_blob = (
+        "\n\n".join(f"[{m['created_at'][:10]} {m['kind']}] {m['text']}" for m in past)
+        if past
+        else ""
+    )
+    if past_blob:
+        farm_ctx = f"{farm_ctx}\n\nPAST RELEVANT MEMORY:\n{past_blob}"
 
     plan = await plan_tasks(query, farm_ctx)
     tasks = plan["tasks"]
@@ -159,8 +170,18 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
     if diag and diag.get("issue") and not diag.get("error"):
         crop = farm.get("crops", [{}])
         crop_name = crop[0]["name"] if crop and isinstance(crop[0], dict) else "crop"
-        memory.record_disease(diag["issue"], crop_name, farm_id)
-    memory.add_event("consult", query[:120], {"intent": plan.get("intent")}, farm_id)
+        await memory.record_disease(diag["issue"], crop_name, farm_id)
+    await memory.add_event("consult", query[:120], {"intent": plan.get("intent")}, farm_id)
+
+    # store this interaction as recallable long-term memory
+    answer = final.get("answer_en") or final.get("answer_local") or ""
+    if answer and not final.get("_parse_error"):
+        await memory.add_memory(
+            farm_id,
+            "consult",
+            f"Q: {query}\nA: {answer}",
+            {"intent": plan.get("intent"), "agents": list(outputs.keys())},
+        )
 
     return {
         "query": query,

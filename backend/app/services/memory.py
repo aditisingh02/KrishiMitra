@@ -1,190 +1,322 @@
 """Farm Memory Agent - the digital twin store.
 
-Acts as a CRM for the farm: crops, soil, disease history, treatments and a
-running activity log. Backed by SQLite so the demo runs with zero setup.
-The public surface is intentionally small so it can be swapped for Postgres.
+Acts as a CRM for the farm: crops, soil, disease history, treatments, a running
+activity log, notifications, and a semantic long-term memory of past consults and
+diagnoses. Backed by PostgreSQL (Render) via async SQLAlchemy, with pgvector for
+similarity recall. Profiles live in a JSONB `data` blob (fully customizable);
+hot lookup fields (phone/language/coords) are mirrored into indexed columns.
+
+The public surface mirrors the previous SQLite store so callers only needed to
+add `await`; two new methods - `add_memory` and `recall` - power semantic recall.
 """
 from __future__ import annotations
 
-import json
-import sqlite3
-import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from app.core.config import settings
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Index, Integer, String, Text, func, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
 
-_LOCK = threading.Lock()
+from app.core.config import settings
+from app.core.db import Base, SessionLocal
+from app.core.fireworks import fireworks
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _norm_phone(phone: str | None) -> str | None:
+    """Last 10 digits, tolerant of +91 / `whatsapp:` prefixes. Used for lookup."""
+    if not phone:
+        return None
+    digits = "".join(ch for ch in str(phone) if ch.isdigit())[-10:]
+    return digits or None
+
+
+# --------------------------------------------------------------------------- #
+# ORM models
+# --------------------------------------------------------------------------- #
+class Farm(Base):
+    __tablename__ = "farms"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # Clerk user id
+    phone: Mapped[str | None] = mapped_column(String, index=True)  # normalized 10-digit
+    language: Mapped[str | None] = mapped_column(String)
+    lat: Mapped[float | None] = mapped_column()
+    lon: Mapped[float | None] = mapped_column()
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # full profile
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+    updated_at: Mapped[str] = mapped_column(String, default=_now)
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    farm_id: Mapped[str] = mapped_column(String, index=True)
+    kind: Mapped[str] = mapped_column(String)
+    summary: Mapped[str] = mapped_column(Text)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    farm_id: Mapped[str] = mapped_column(String, index=True)
+    level: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    read: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+
+class Memory(Base):
+    """Semantic long-term memory: embedded past consults / diagnoses per farm."""
+
+    __tablename__ = "memories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    farm_id: Mapped[str] = mapped_column(String, index=True)
+    kind: Mapped[str] = mapped_column(String)
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float]] = mapped_column(Vector(settings.embed_dim))
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+    __table_args__ = (
+        Index(
+            "ix_memories_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+
 class FarmMemory:
-    def __init__(self, db_path: str | None = None) -> None:
-        self.path = Path(db_path or settings.db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self) -> None:
-        with _LOCK, self._conn() as c:
-            c.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS farms (
-                    id TEXT PRIMARY KEY,
-                    data TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    farm_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    detail TEXT,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    farm_id TEXT NOT NULL,
-                    level TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    body TEXT NOT NULL,
-                    read INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
-
     # ---------- farm twin (farm_id == authenticated Clerk user id) ----------
-    def get_farm(self, farm_id: str) -> dict[str, Any]:
-        with _LOCK, self._conn() as c:
-            row = c.execute("SELECT data FROM farms WHERE id=?", (farm_id,)).fetchone()
-        return json.loads(row["data"]) if row else {}
+    async def get_farm(self, farm_id: str) -> dict[str, Any]:
+        async with SessionLocal() as s:
+            row = await s.get(Farm, farm_id)
+            return dict(row.data) if row else {}
 
-    def farm_exists(self, farm_id: str) -> bool:
-        with _LOCK, self._conn() as c:
-            row = c.execute("SELECT 1 FROM farms WHERE id=?", (farm_id,)).fetchone()
-        return row is not None
+    async def farm_exists(self, farm_id: str) -> bool:
+        async with SessionLocal() as s:
+            return await s.get(Farm, farm_id) is not None
 
-    def all_farms(self) -> list[dict[str, Any]]:
-        with _LOCK, self._conn() as c:
-            rows = c.execute("SELECT data FROM farms").fetchall()
-        return [json.loads(r["data"]) for r in rows]
+    async def all_farms(self) -> list[dict[str, Any]]:
+        async with SessionLocal() as s:
+            rows = (await s.execute(select(Farm.data))).scalars().all()
+        return [dict(d) for d in rows]
 
-    def farm_by_phone(self, phone: str) -> dict[str, Any] | None:
-        """Match an inbound WhatsApp number (suffix match tolerates +91/whatsapp: prefixes)."""
-        digits = "".join(ch for ch in phone if ch.isdigit())[-10:]
+    async def farm_by_phone(self, phone: str) -> dict[str, Any] | None:
+        """Match an inbound WhatsApp number via the indexed normalized-phone column."""
+        digits = _norm_phone(phone)
         if not digits:
             return None
-        for farm in self.all_farms():
-            fp = "".join(ch for ch in str(farm.get("phone", "")) if ch.isdigit())
-            if fp and fp[-10:] == digits:
-                return farm
-        return None
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(select(Farm).where(Farm.phone == digits))
+            ).scalars().first()
+            return dict(row.data) if row else None
 
-    def save_farm(self, farm: dict[str, Any], farm_id: str) -> dict[str, Any]:
+    async def save_farm(self, farm: dict[str, Any], farm_id: str) -> dict[str, Any]:
         farm = {**farm, "id": farm_id}
-        with _LOCK, self._conn() as c:
-            c.execute(
-                "INSERT INTO farms(id,data,updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
-                (farm_id, json.dumps(farm), _now()),
-            )
+        now = _now()
+        async with SessionLocal() as s:
+            row = await s.get(Farm, farm_id)
+            if row is None:
+                row = Farm(id=farm_id, created_at=now)
+                s.add(row)
+            row.data = farm
+            row.phone = _norm_phone(farm.get("phone"))
+            row.language = farm.get("language")
+            row.lat = farm.get("lat")
+            row.lon = farm.get("lon")
+            row.updated_at = now
+            await s.commit()
         return farm
 
-    def update_farm(self, patch: dict[str, Any], farm_id: str) -> dict[str, Any]:
-        farm = self.get_farm(farm_id)
+    async def update_farm(self, patch: dict[str, Any], farm_id: str) -> dict[str, Any]:
+        farm = await self.get_farm(farm_id)
         farm.update(patch)
-        return self.save_farm(farm, farm_id)
+        return await self.save_farm(farm, farm_id)
 
     # ---------- events / history ----------
-    def add_event(
+    async def add_event(
         self,
         kind: str,
         summary: str,
         detail: dict[str, Any] | None,
         farm_id: str,
     ) -> None:
-        with _LOCK, self._conn() as c:
-            c.execute(
-                "INSERT INTO events(farm_id,kind,summary,detail,created_at) VALUES(?,?,?,?,?)",
-                (farm_id, kind, summary, json.dumps(detail or {}), _now()),
+        async with SessionLocal() as s:
+            s.add(
+                Event(
+                    farm_id=farm_id,
+                    kind=kind,
+                    summary=summary,
+                    detail=detail or {},
+                    created_at=_now(),
+                )
             )
+            await s.commit()
 
-    def recent_events(self, limit: int, farm_id: str) -> list[dict[str, Any]]:
-        with _LOCK, self._conn() as c:
-            rows = c.execute(
-                "SELECT kind,summary,detail,created_at FROM events "
-                "WHERE farm_id=? ORDER BY id DESC LIMIT ?",
-                (farm_id, limit),
-            ).fetchall()
+    async def recent_events(self, limit: int, farm_id: str) -> list[dict[str, Any]]:
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(Event)
+                    .where(Event.farm_id == farm_id)
+                    .order_by(Event.id.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
         return [
             {
-                "kind": r["kind"],
-                "summary": r["summary"],
-                "detail": json.loads(r["detail"] or "{}"),
-                "created_at": r["created_at"],
+                "kind": r.kind,
+                "summary": r.summary,
+                "detail": r.detail or {},
+                "created_at": r.created_at,
             }
             for r in rows
         ]
 
-    def record_disease(self, disease: str, crop: str, farm_id: str) -> None:
-        farm = self.get_farm(farm_id)
+    async def record_disease(self, disease: str, crop: str, farm_id: str) -> None:
+        farm = await self.get_farm(farm_id)
         history = farm.get("recent_diseases", [])
         entry = {"disease": disease, "crop": crop, "date": _now()[:10]}
         history = [entry] + [h for h in history if h.get("disease") != disease][:9]
-        self.update_farm({"recent_diseases": history}, farm_id)
-        self.add_event("diagnosis", f"{disease} detected on {crop}", entry, farm_id)
+        await self.update_farm({"recent_diseases": history}, farm_id)
+        await self.add_event("diagnosis", f"{disease} detected on {crop}", entry, farm_id)
 
     # ---------- notifications ----------
-    def add_notification(self, farm_id: str, level: str, title: str, body: str) -> int:
-        with _LOCK, self._conn() as c:
-            cur = c.execute(
-                "INSERT INTO notifications(farm_id,level,title,body,read,created_at) "
-                "VALUES(?,?,?,?,0,?)",
-                (farm_id, level, title, body, _now()),
+    async def add_notification(self, farm_id: str, level: str, title: str, body: str) -> int:
+        async with SessionLocal() as s:
+            note = Notification(
+                farm_id=farm_id, level=level, title=title, body=body, read=0, created_at=_now()
             )
-            return cur.lastrowid
+            s.add(note)
+            await s.commit()
+            return note.id
 
-    def list_notifications(self, farm_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        with _LOCK, self._conn() as c:
-            rows = c.execute(
-                "SELECT id,level,title,body,read,created_at FROM notifications "
-                "WHERE farm_id=? ORDER BY id DESC LIMIT ?",
-                (farm_id, limit),
-            ).fetchall()
-        return [dict(r) for r in rows]
+    async def list_notifications(self, farm_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(Notification)
+                    .where(Notification.farm_id == farm_id)
+                    .order_by(Notification.id.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+        return [
+            {
+                "id": r.id,
+                "level": r.level,
+                "title": r.title,
+                "body": r.body,
+                "read": r.read,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ]
 
-    def unread_count(self, farm_id: str) -> int:
-        with _LOCK, self._conn() as c:
-            row = c.execute(
-                "SELECT COUNT(*) n FROM notifications WHERE farm_id=? AND read=0", (farm_id,)
-            ).fetchone()
-        return row["n"]
+    async def unread_count(self, farm_id: str) -> int:
+        async with SessionLocal() as s:
+            return (
+                await s.execute(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(Notification.farm_id == farm_id, Notification.read == 0)
+                )
+            ).scalar_one()
 
-    def mark_notifications_read(self, farm_id: str) -> None:
-        with _LOCK, self._conn() as c:
-            c.execute("UPDATE notifications SET read=1 WHERE farm_id=?", (farm_id,))
+    async def mark_notifications_read(self, farm_id: str) -> None:
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(Notification).where(
+                        Notification.farm_id == farm_id, Notification.read == 0
+                    )
+                )
+            ).scalars().all()
+            for r in rows:
+                r.read = 1
+            await s.commit()
 
-    def notification_exists_today(self, farm_id: str, title: str) -> bool:
-        with _LOCK, self._conn() as c:
-            row = c.execute(
-                "SELECT 1 FROM notifications WHERE farm_id=? AND title=? AND substr(created_at,1,10)=? LIMIT 1",
-                (farm_id, title, _now()[:10]),
-            ).fetchone()
+    async def notification_exists_today(self, farm_id: str, title: str) -> bool:
+        today = _now()[:10]
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(Notification.id).where(
+                        Notification.farm_id == farm_id,
+                        Notification.title == title,
+                        Notification.created_at.like(f"{today}%"),
+                    )
+                )
+            ).first()
         return row is not None
 
+    # ---------- semantic long-term memory (pgvector) ----------
+    async def add_memory(
+        self,
+        farm_id: str,
+        kind: str,
+        text: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        """Embed `text` and store it as recallable long-term memory for the farm."""
+        text = (text or "").strip()
+        if not text:
+            return
+        embedding = await fireworks.embed(text)
+        async with SessionLocal() as s:
+            s.add(
+                Memory(
+                    farm_id=farm_id,
+                    kind=kind,
+                    text=text,
+                    embedding=embedding,
+                    meta=meta or {},
+                    created_at=_now(),
+                )
+            )
+            await s.commit()
+
+    async def recall(self, farm_id: str, query: str, k: int = 4) -> list[dict[str, Any]]:
+        """Return the k most semantically relevant past memories for this farm."""
+        query = (query or "").strip()
+        if not query:
+            return []
+        embedding = await fireworks.embed(query)
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(Memory)
+                    .where(Memory.farm_id == farm_id)
+                    .order_by(Memory.embedding.cosine_distance(embedding))
+                    .limit(k)
+                )
+            ).scalars().all()
+        return [
+            {"kind": r.kind, "text": r.text, "meta": r.meta or {}, "created_at": r.created_at}
+            for r in rows
+        ]
+
     # ---------- compact context for prompts ----------
-    def context_blob(self, farm_id: str) -> str:
-        farm = self.get_farm(farm_id)
-        events = self.recent_events(6, farm_id)
+    async def context_blob(self, farm_id: str) -> str:
+        import json
+
+        farm = await self.get_farm(farm_id)
+        events = await self.recent_events(6, farm_id)
         return json.dumps({"farm": farm, "recent_activity": events}, ensure_ascii=False)
 
 

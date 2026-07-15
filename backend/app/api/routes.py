@@ -65,14 +65,14 @@ async def health() -> dict[str, str]:
 
 @router.get("/farm/exists")
 async def farm_exists(user: str = Depends(get_current_user)) -> dict[str, bool]:
-    return {"exists": memory.farm_exists(user)}
+    return {"exists": await memory.farm_exists(user)}
 
 
 @router.get("/farm")
 async def get_farm(user: str = Depends(get_current_user)) -> dict[str, Any]:
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
-    return {"farm": memory.get_farm(user), "recent_activity": memory.recent_events(10, user)}
+    return {"farm": await memory.get_farm(user), "recent_activity": await memory.recent_events(10, user)}
 
 
 @router.post("/farm")
@@ -89,16 +89,16 @@ async def create_farm(body: FarmCreate, user: str = Depends(get_current_user)) -
     except weather.ExternalDataError:
         farm.update({"lat": None, "lon": None})  # resolved later via ensure_coords
 
-    saved = memory.save_farm(farm, user)
-    memory.add_event("onboarding", f"Farm created in {body.location}", None, user)
+    saved = await memory.save_farm(farm, user)
+    await memory.add_event("onboarding", f"Farm created in {body.location}", None, user)
     return {"farm": saved}
 
 
 @router.patch("/farm")
 async def update_farm(patch: dict[str, Any], user: str = Depends(get_current_user)) -> dict[str, Any]:
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
-    farm = memory.update_farm(patch, user)
+    farm = await memory.update_farm(patch, user)
     # language/crops/etc. changed → rebuild the dashboard (also re-localizes it)
     flows.invalidate_dashboard(user)
     return {"farm": farm}
@@ -109,7 +109,7 @@ async def get_dashboard(
     user: str = Depends(get_current_user),
     refresh: bool = Query(False, description="Bypass the cache and rebuild from live data + AI"),
 ) -> dict[str, Any]:
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
     return await flows.dashboard(user, force=refresh)
 
@@ -118,7 +118,7 @@ async def get_dashboard(
 async def consult(req: ConsultRequest, user: str = Depends(get_current_user)) -> dict[str, Any]:
     if not req.query.strip():
         raise HTTPException(400, "Empty query")
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
     return await orchestrator.consult(req.query, user)
 
@@ -129,7 +129,7 @@ async def diagnose(
     note: str = Form(""),
     user: str = Depends(get_current_user),
 ) -> dict[str, Any]:
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
     raw = await file.read()
     if not raw:
@@ -148,7 +148,7 @@ async def cropping(req: CroppingRequest, user: str = Depends(get_current_user)) 
 
 @router.post("/weekly-plan")
 async def weekly(req: WeeklyRequest, user: str = Depends(get_current_user)) -> dict[str, Any]:
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
     return {"plan": await flows.weekly_plan(user, req.focus)}
 
@@ -168,7 +168,7 @@ async def translate_ui(req: TranslateRequest) -> dict[str, Any]:
 # ---------- soil health card ----------
 @router.post("/soil-card")
 async def soil_card(file: UploadFile = File(...), user: str = Depends(get_current_user)) -> dict[str, Any]:
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
     raw = await file.read()
     if not raw:
@@ -184,25 +184,25 @@ async def soil_card(file: UploadFile = File(...), user: str = Depends(get_curren
 @router.get("/notifications")
 async def notifications(user: str = Depends(get_current_user)) -> dict[str, Any]:
     return {
-        "items": memory.list_notifications(user),
-        "unread": memory.unread_count(user),
+        "items": await memory.list_notifications(user),
+        "unread": await memory.unread_count(user),
     }
 
 
 @router.post("/notifications/read")
 async def mark_read(user: str = Depends(get_current_user)) -> dict[str, bool]:
-    memory.mark_notifications_read(user)
+    await memory.mark_notifications_read(user)
     return {"ok": True}
 
 
 @router.post("/monitor/run")
 async def monitor_run(user: str = Depends(get_current_user)) -> dict[str, Any]:
     """Run the proactive monitor for the current farm on demand (also runs on a schedule)."""
-    if not memory.farm_exists(user):
+    if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
-    created = await monitor.check_farm(memory.get_farm(user))
+    created = await monitor.check_farm(await memory.get_farm(user))
     flows.invalidate_dashboard(user)  # surface any new alerts on next load
-    return {"alerts_created": created, "unread": memory.unread_count(user)}
+    return {"alerts_created": created, "unread": await memory.unread_count(user)}
 
 
 # ---------- Twilio WhatsApp inbound webhook (no Clerk auth; matched by phone) ----------
@@ -213,7 +213,7 @@ async def whatsapp_inbound(request: Request) -> Response:
     body = str(form.get("Body", "")).strip()
     num_media = int(form.get("NumMedia", "0") or 0)
 
-    farm = memory.farm_by_phone(from_number)
+    farm = await memory.farm_by_phone(from_number)
     if not farm:
         return _twiml(
             "Welcome to KrishiMitra! This number isn't linked to a farm yet. "

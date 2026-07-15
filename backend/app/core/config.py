@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit, urlunsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +27,10 @@ class Settings(BaseSettings):
     model_fast: str = "accounts/fireworks/models/gpt-oss-120b"
     model_heavy: str = "accounts/fireworks/models/deepseek-v4-pro"
     model_image: str = "accounts/fireworks/models/flux-1-schnell-fp8"
+    # Embeddings power the pgvector long-term memory (semantic recall of past
+    # consults/diagnoses). Keep `embed_dim` in sync with the model's output size.
+    model_embed: str = "nomic-ai/nomic-embed-text-v1.5"
+    embed_dim: int = 768
 
     # --- External data (no synthetic fallbacks) ---
     openweather_api_key: str = ""
@@ -54,14 +60,42 @@ class Settings(BaseSettings):
     clerk_issuer: str = ""
     clerk_secret_key: str = ""  # reserved for Clerk backend API calls if needed
 
+    # --- Database (Render PostgreSQL) ---
+    # Render injects DATABASE_URL as postgresql://...; async_database_url adapts it
+    # for asyncpg. db_path is retained only for the one-off SQLite import script.
+    database_url: str = ""
+    db_path: str = "data/krishimitra.db"
+
     # --- App ---
     app_name: str = "KrishiMitra AI"
-    db_path: str = "data/krishimitra.db"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def async_database_url(self) -> str:
+        """DATABASE_URL rewritten for the asyncpg driver.
+
+        Accepts the postgres://` / `postgresql://` form Render (and most hosts)
+        provide and swaps in the asyncpg driver. Any `sslmode` query param is
+        dropped because asyncpg rejects it there - SSL is negotiated automatically
+        for managed Postgres, or configured via the engine's connect_args.
+        """
+        url = self.database_url
+        if not url:
+            raise RuntimeError(
+                "DATABASE_URL is not set. Point it at your Render Postgres instance."
+            )
+        parts = urlsplit(url)
+        scheme = parts.scheme
+        if scheme in ("postgres", "postgresql"):
+            scheme = "postgresql+asyncpg"
+        query = "&".join(
+            kv for kv in parts.query.split("&") if kv and not kv.startswith("sslmode=")
+        )
+        return urlunsplit((scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 @lru_cache

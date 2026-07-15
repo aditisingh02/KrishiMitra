@@ -34,9 +34,9 @@ async def check_farm(farm: dict) -> int:
         if alert["level"] not in {"warning", "danger"}:
             continue
         title = alert["text"][:60]
-        if memory.notification_exists_today(farm_id, title):
+        if await memory.notification_exists_today(farm_id, title):
             continue  # de-dupe per day
-        memory.add_notification(farm_id, alert["level"], title, alert["text"])
+        await memory.add_notification(farm_id, alert["level"], title, alert["text"])
         created += 1
         phone = farm.get("phone")
         if phone:
@@ -50,7 +50,7 @@ async def check_farm(farm: dict) -> int:
 
 
 async def run_once() -> dict:
-    farms = memory.all_farms()
+    farms = await memory.all_farms()
     total = 0
     for farm in farms:
         total += await check_farm(farm)
