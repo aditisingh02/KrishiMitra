@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #fbfbfa;
+  color: #1a1a18;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #edf3ec;
+  color: #2b5430;
+}
+
+/* ---- light, thin scrollbar ---- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #e2e2df;
+  border-radius: 8px;
+  border: 3px solid #fbfbfa;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c9c9c5;
+}
+
+@layer components {
+  /* flat card: hairline border, near-zero shadow, ultra-subtle hover lift */
+  .card {
+    background: #ffffff;
+    border: 1px solid #eaeaea;
+    border-radius: 12px;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  }
+  .card-interactive:hover {
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
+    border-color: #dedede;
+  }
+
+  /* editorial display heading */
+  .display {
+    font-family: var(--font-serif);
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+  }
+
+  /* eyebrow / overline */
+  .overline {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #9b9a97;
+  }
+
+  /* pastel tag */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 9999px;
+    padding: 0.2rem 0.6rem;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-family: var(--font-mono);
+  }
+
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border: 1px solid #eaeaea;
+    border-radius: 4px;
+    background: #f7f6f3;
+    padding: 1px 5px;
+    color: #2f3437;
+  }
+}
+
+/* hairline helpers */
+.hairline {
+  border: 1px solid #eaeaea;
+}
+.hairline-b {
+  border-bottom: 1px solid #eaeaea;
+}
+
+/* faint paper texture / depth for large sections (very low opacity) */
+.paper-glow {
+  background-image: radial-gradient(
+    60% 50% at 50% 0%,
+    rgba(52, 101, 56, 0.05),
+    transparent 70%
+  );
+}
+
+.dot-grid {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
