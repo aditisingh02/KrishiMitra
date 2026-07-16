@@ -1,5 +1,6 @@
 "use client";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
+import { downscaleImage } from "@/lib/image";
 import { Tag, Button, Card } from "@/components/ui/primitives";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -12,27 +13,54 @@ import {
   CheckCircle,
   X,
 } from "@phosphor-icons/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-runtime";
 import { getStoredLang } from "@/lib/i18n";
+
+const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 
 export default function DiagnosePage() {
   const t = useT();
   const [preview, setPreview] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [sizes, setSizes] = useState<{ from: number; to: number } | null>(null);
+  const [compressing, setCompressing] = useState(false);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [drag, setDrag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const previewUrl = useRef<string | null>(null);
 
-  function onFile(f: File) {
+  function setPreviewUrl(url: string | null) {
+    // Object URLs pin the blob in memory until revoked - always release the old one.
+    if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
+    previewUrl.current = url;
+    setPreview(url);
+  }
+
+  // Revoke on unmount so navigating away doesn't leak the blob.
+  useEffect(() => () => {
+    if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
+  }, []);
+
+  async function onFile(f: File) {
     if (!f.type.startsWith("image/")) return;
-    setFile(f);
     setResult(null);
-    const reader = new FileReader();
-    reader.onload = () => setPreview(reader.result as string);
-    reader.readAsDataURL(f);
+    setSizes(null);
+    setCompressing(true);
+    try {
+      // Downscale at selection, not at submit: by the time the farmer hits
+      // "Diagnose" the upload is already ~250KB instead of several MB. The
+      // preview reuses the downscaled blob (readAsDataURL on a 4MB photo
+      // visibly janks a low-end Android).
+      const out = await downscaleImage(f);
+      setFile(out.file);
+      setPreviewUrl(out.previewUrl);
+      setSizes(out.resized ? { from: out.originalBytes, to: out.bytes } : null);
+    } finally {
+      setCompressing(false);
+    }
   }
 
   async function diagnose() {
@@ -47,16 +75,25 @@ export default function DiagnosePage() {
         u.lang = res.diagnosis.language?.tts || `${getStoredLang() || "hi"}-IN`;
         window.speechSynthesis.speak(u);
       }
-    } catch {
-      alert(t("Diagnosis failed. Is the backend running?"));
+    } catch (e) {
+      if (e instanceof ApiError) {
+        if (e.status === 429) alert(t("Too many photos too quickly. Please wait a moment and try again."));
+        else if (e.status === 413) alert(t("That photo is too large. Please try another one."));
+        else if (e.status === 415) alert(t("Unsupported image type. Please send a JPEG or PNG photo."));
+        else if (e.status === 404) alert(t("Complete onboarding first so I know your farm."));
+        else alert(t("Diagnosis failed. Please try again."));
+      } else {
+        alert(t("Couldn't reach KrishiMitra. Check your connection and try again."));
+      }
     } finally {
       setLoading(false);
     }
   }
 
   function reset() {
-    setPreview(null);
+    setPreviewUrl(null);
     setFile(null);
+    setSizes(null);
     setResult(null);
     setNote("");
   }
@@ -93,8 +130,17 @@ export default function DiagnosePage() {
             <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-line bg-bone text-field-600">
               <UploadSimple className="h-6 w-6" />
             </div>
-            <p className="text-sm font-medium text-ink">{t("Drop a crop photo here")}</p>
-            <p className="font-mono text-xs text-faint">{t("or click to browse · JPG / PNG")}</p>
+            {compressing ? (
+              <>
+                <p className="text-sm font-medium text-ink">{t("Compressing photo…")}</p>
+                <p className="font-mono text-xs text-faint">{t("so it uploads fast on mobile data")}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium text-ink">{t("Drop a crop photo here")}</p>
+                <p className="font-mono text-xs text-faint">{t("or click to browse · JPG / PNG")}</p>
+              </>
+            )}
             <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
           </div>
         ) : (
@@ -104,6 +150,13 @@ export default function DiagnosePage() {
             <button onClick={reset} className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md bg-surface/90 text-charcoal shadow-subtle backdrop-blur hover:bg-surface">
               <X className="h-4 w-4" />
             </button>
+            {sizes && !loading && (
+              // Real numbers, not a fake progress bar - this is the upload the
+              // farmer no longer has to pay for.
+              <span className="absolute left-3 top-3 rounded-md bg-surface/90 px-2 py-1 font-mono text-[11px] text-muted shadow-subtle backdrop-blur">
+                {kb(sizes.from)} → {kb(sizes.to)}
+              </span>
+            )}
             {loading && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-paper/80 backdrop-blur-sm">
                 <CircleNotch className="h-9 w-9 animate-spin text-field-600" />
@@ -122,9 +175,9 @@ export default function DiagnosePage() {
             placeholder={t("Optional note (e.g. spots spreading fast on lower leaves)")}
             className="w-full rounded-md border border-line bg-surface px-4 py-3 text-sm text-ink placeholder:text-faint focus:border-faint/50 focus:outline-none"
           />
-          <Button onClick={diagnose} disabled={loading} size="lg" className="w-full">
-            {loading ? <CircleNotch className="h-5 w-5 animate-spin" /> : <Scan className="h-5 w-5" />}
-            {t("Diagnose with AI")}
+          <Button onClick={diagnose} disabled={loading || compressing} size="lg" className="w-full">
+            {loading || compressing ? <CircleNotch className="h-5 w-5 animate-spin" /> : <Scan className="h-5 w-5" />}
+            {compressing ? t("Compressing photo…") : t("Diagnose with AI")}
           </Button>
         </div>
       )}

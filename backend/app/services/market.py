@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from app.core import http
 from app.core.config import settings
 from app.services.weather import ExternalDataError
 
@@ -70,6 +71,11 @@ async def _fetch_commodity(client: httpx.AsyncClient, commodity: str, state: str
             r = await client.get(
                 f"https://api.data.gov.in/resource/{settings.agmarknet_resource_id}",
                 params=params,
+                # data.gov.in silently drops requests carrying httpx's default
+                # User-Agent (they all time out), so send an explicit one. Set
+                # per-request because the client is shared across services.
+                headers={"User-Agent": "KrishiMitra/1.0"},
+                timeout=8,
             )
             r.raise_for_status()
             return r.json().get("records", [])
@@ -105,14 +111,14 @@ async def _crop_item(client: httpx.AsyncClient, crop: str, state: str | None, ke
 
 async def get_prices(crops: list[str], state: str | None = None) -> dict[str, Any]:
     key = _require_key()
-    # data.gov.in silently drops requests sent with httpx's default User-Agent
-    # (every one times out), so we must send an explicit UA.
     # Fetch crops concurrently so total latency ~= the slowest single call, not the
     # sum - critical under the dashboard's tight market budget. Cap crops queried.
-    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "KrishiMitra/1.0"}) as client:
-        results = await asyncio.gather(
-            *(_crop_item(client, crop, state, key) for crop in crops[:6])
-        )
+    # The shared pooled client keeps connections warm across requests (the UA and
+    # timeout are set per-request in _fetch_commodity).
+    client = http.get_client()
+    results = await asyncio.gather(
+        *(_crop_item(client, crop, state, key) for crop in crops[:6])
+    )
     out = [item for item in results if item]
 
     if not out:

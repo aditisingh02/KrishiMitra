@@ -7,7 +7,17 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -16,7 +26,7 @@ from app.core import guards, languages, twilio_verify
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.limits import ip_rate_limit, user_rate_limit
-from app.core.uploads import read_image_data_url
+from app.core.uploads import downscale_image, read_image_data_url
 from app.services import i18n, monitor, weather
 from app.services.memory import memory
 
@@ -133,6 +143,7 @@ async def consult(req: ConsultRequest, user: str = Depends(get_current_user)) ->
 
 @router.post("/diagnose", dependencies=[Depends(user_rate_limit(settings.limit_diagnose, "diagnose"))])
 async def diagnose(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     note: str = Form(""),
     user: str = Depends(get_current_user),
@@ -141,7 +152,12 @@ async def diagnose(
         raise HTTPException(404, "No farm yet - complete onboarding")
     data_url = await read_image_data_url(file)
     diagnosis = await flows.diagnose_image(data_url, user, guards.sanitize(note))
-    flows.invalidate_dashboard(user)  # a new disease record changes health/risk
+    # Recording the disease + embedding it into long-term memory costs an extra
+    # network round trip the farmer doesn't need to wait for. Starlette runs this
+    # after the response is flushed. It also invalidates the dashboard cache -
+    # which must happen after the write lands, not before (see persist_diagnosis).
+    if flows.needs_persisting(diagnosis):
+        background.add_task(flows.persist_diagnosis, diagnosis, user)
     return {"diagnosis": diagnosis}
 
 
@@ -231,7 +247,7 @@ async def monitor_run(user: str = Depends(get_current_user)) -> dict[str, Any]:
 # attacker-controlled and any farm could be impersonated, so an unverified
 # request is rejected before any farm lookup or agent call.
 @router.post("/whatsapp", dependencies=[Depends(ip_rate_limit(settings.limit_whatsapp, "whatsapp"))])
-async def whatsapp_inbound(request: Request) -> Response:
+async def whatsapp_inbound(request: Request, background: BackgroundTasks) -> Response:
     form = await request.form()
 
     if settings.twilio_validate_signature:
@@ -270,8 +286,15 @@ async def whatsapp_inbound(request: Request) -> Response:
             r.raise_for_status()
             if len(r.content) > settings.max_upload_bytes:
                 return _twiml("That photo is too large. Please send a smaller image.")
-            data_url = f"data:{mime};base64,{base64.b64encode(r.content).decode()}"
+            # No browser in this path to pre-shrink the photo, so downscale here -
+            # WhatsApp photos arrive at full camera resolution.
+            content, mime = await downscale_image(r.content, mime)
+            data_url = f"data:{mime};base64,{base64.b64encode(content).decode()}"
             diag = await flows.diagnose_image(data_url, farm_id, guards.sanitize(body))
+            # Same as the web route: persist after the reply goes out, so the
+            # farmer's WhatsApp answer isn't waiting on an embedding round trip.
+            if flows.needs_persisting(diag):
+                background.add_task(flows.persist_diagnosis, diag, farm_id)
             reply = _format_diagnosis(diag)
         elif body:
             res = await orchestrator.consult(body, farm_id)

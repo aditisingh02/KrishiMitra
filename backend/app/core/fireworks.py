@@ -2,11 +2,23 @@
 
 All agents share this client. It supports plain chat, JSON-mode chat (for
 structured agent outputs) and multimodal vision chat (image + text).
+
+**Connection reuse.** The underlying `httpx.AsyncClient` is created once and held
+open, so calls reuse a warm TLS connection instead of paying a DNS+TCP+TLS
+handshake (~100-300ms) every time. It's built lazily / on app startup rather than
+at import, because a client constructed at import binds to whichever event loop
+happens to exist then - which breaks under pytest and the monitor's background loop.
+
+**Instrumentation.** Every call logs latency plus the provider's `usage` block
+(prompt / completion / reasoning tokens). On a vision call `prompt_tokens` *is*
+the image-token cost, which is how we measure whether image downscaling actually
+helped rather than assuming it did.
 """
 from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -27,6 +39,54 @@ class FireworksClient:
             "Content-Type": "application/json",
         }
         self._base = settings.fireworks_base_url
+        self._client: httpx.AsyncClient | None = None
+
+    # ---------- connection lifecycle ----------
+    def _new_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers=self._headers,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+            timeout=httpx.Timeout(120.0),  # per-call timeouts override this on .post()
+        )
+
+    async def startup(self) -> None:
+        """Open the shared client. Called from the app lifespan."""
+        if self._client is None or self._client.is_closed:
+            self._client = self._new_client()
+
+    async def aclose(self) -> None:
+        """Close the shared client. Called from the app lifespan."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+    def _get(self) -> httpx.AsyncClient:
+        """The shared client, built on demand.
+
+        Lazy fallback matters: tests build the app without running lifespan, and
+        `monitor.loop()` runs outside any request.
+        """
+        if self._client is None or self._client.is_closed:
+            self._client = self._new_client()
+        return self._client
+
+    @staticmethod
+    def _log_usage(model: str, elapsed_ms: float, req_bytes: int, data: dict[str, Any]) -> None:
+        """One structured line per call - the basis for any latency work."""
+        usage = data.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        finish = (data.get("choices") or [{}])[0].get("finish_reason")
+        logger.info(
+            "fireworks call model=%s ms=%.0f req_kb=%.1f prompt_tokens=%s "
+            "completion_tokens=%s reasoning_tokens=%s finish=%s",
+            model,
+            elapsed_ms,
+            req_bytes / 1024,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            details.get("reasoning_tokens"),
+            finish,
+        )
 
     async def chat(
         self,
@@ -57,17 +117,24 @@ class FireworksClient:
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{self._base}/chat/completions",
-                headers=self._headers,
-                json=payload,
-            )
+        body = json.dumps(payload)
+        started = time.perf_counter()
+        resp = await self._get().post(
+            f"{self._base}/chat/completions",
+            content=body,
+            timeout=timeout,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000
+
         if resp.status_code != 200:
-            logger.error("Fireworks error %s: %s", resp.status_code, resp.text[:500])
+            logger.error(
+                "Fireworks error %s after %.0fms: %s",
+                resp.status_code, elapsed_ms, resp.text[:500],
+            )
             raise FireworksError(f"Fireworks {resp.status_code}: {resp.text[:200]}")
 
         data = resp.json()
+        self._log_usage(payload["model"], elapsed_ms, len(body), data)
         choice = data["choices"][0]
         content = choice["message"].get("content") or ""
         if not content.strip() and choice.get("finish_reason") == "length":
@@ -138,15 +205,17 @@ class FireworksClient:
         `settings.embed_dim`; if you change the embedding model, update that too.
         """
         payload = {"model": model or settings.model_embed, "input": text}
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{self._base}/embeddings",
-                headers=self._headers,
-                json=payload,
-            )
+        started = time.perf_counter()
+        resp = await self._get().post(
+            f"{self._base}/embeddings",
+            json=payload,
+            timeout=60.0,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000
         if resp.status_code != 200:
             logger.error("Fireworks embed error %s: %s", resp.status_code, resp.text[:500])
             raise FireworksError(f"Fireworks embed {resp.status_code}: {resp.text[:200]}")
+        logger.info("fireworks embed ms=%.0f chars=%d", elapsed_ms, len(text))
         return resp.json()["data"][0]["embedding"]
 
     async def vision(

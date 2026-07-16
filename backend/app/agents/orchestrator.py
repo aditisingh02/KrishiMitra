@@ -108,7 +108,7 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
     query = guards.check_query(query)
 
     farm = await ensure_coords(farm_id, await memory.get_farm(farm_id))
-    farm_ctx = await memory.context_blob(farm_id)
+    farm_ctx = await memory.context_blob(farm_id, farm=farm)  # reuse; don't re-query
 
     # Semantic long-term recall: relevant past consults/diagnoses for this farm.
     past = await memory.recall(farm_id, query)

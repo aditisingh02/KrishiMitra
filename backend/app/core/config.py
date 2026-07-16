@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 5 * 1024 * 1024  # 5 MB
     allowed_image_types: str = "image/jpeg,image/png,image/webp"
 
+    # Images are downscaled to this long edge before reaching the vision model.
+    # Vision models tile at roughly 1024-1568px and downscale internally anyway,
+    # so beyond this we'd pay upload + image-token cost for pixels the model
+    # discards. Do NOT drop below 1024: early-stage speckling and lesion margins
+    # stop being legible, and reading those correctly is the product.
+    max_image_edge: int = 1280
+    image_jpeg_quality: int = 85
+
     # --- i18n request caps (public endpoint: keep the work bounded) ---
     i18n_max_strings: int = 200
     i18n_max_string_len: int = 400

@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from app.core import http
 from app.core.config import settings
 
 
@@ -38,16 +39,17 @@ async def geocode(place: str) -> dict[str, float]:
     key = _require_key()
     queries = [_india_biased(place), place]  # prefer India, fall back to raw
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            for q in queries:
-                r = await client.get(
-                    "https://api.openweathermap.org/geo/1.0/direct",
-                    params={"q": q, "limit": 1, "appid": key},
-                )
-                r.raise_for_status()
-                data = r.json()
-                if data:
-                    return {"lat": float(data[0]["lat"]), "lon": float(data[0]["lon"])}
+        client = http.get_client()
+        for q in queries:
+            r = await client.get(
+                "https://api.openweathermap.org/geo/1.0/direct",
+                params={"q": q, "limit": 1, "appid": key},
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if data:
+                return {"lat": float(data[0]["lat"]), "lon": float(data[0]["lon"])}
     except httpx.HTTPError as e:
         raise ExternalDataError(f"Geocoding failed: {e}") from e
     raise ExternalDataError(f"Could not locate '{place}'. Try 'City, State'.")
@@ -57,11 +59,11 @@ async def get_forecast(lat: float, lon: float) -> dict[str, Any]:
     """Real 5-day forecast aggregated to daily values."""
     key = _require_key()
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
-            r = await client.get(
-                "https://api.openweathermap.org/data/2.5/forecast",
-                params={"lat": lat, "lon": lon, "appid": key, "units": "metric"},
-            )
+        r = await http.get_client().get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={"lat": lat, "lon": lon, "appid": key, "units": "metric"},
+            timeout=25,
+        )
         r.raise_for_status()
         raw = r.json()
     except httpx.HTTPError as e:

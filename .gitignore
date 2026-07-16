@@ -33,3 +33,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# ---- vision eval fixtures (fetched on demand, never committed) ----
+backend/tests/fixtures/images/

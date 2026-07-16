@@ -44,10 +44,62 @@ async def ensure_coords(farm_id: str, farm: dict[str, Any]) -> dict[str, Any]:
     return await memory.update_farm({"lat": coords["lat"], "lon": coords["lon"]}, farm_id)
 
 
+def needs_persisting(result: Any) -> bool:
+    """True if a diagnosis found a real issue worth recording on the farm twin."""
+    return (
+        isinstance(result, dict)
+        and bool(result.get("issue"))
+        and result.get("category") != "healthy"
+        and not result.get("_parse_error")
+    )
+
+
+async def persist_diagnosis(result: dict[str, Any], farm_id: str) -> None:
+    """Record a diagnosis on the farm twin. Runs AFTER the response is sent.
+
+    None of this is needed to answer the farmer, but all of it costs round trips
+    (a disease write, plus an embedding call for long-term memory). Running it in
+    the background takes it off the critical path.
+
+    Order is load-bearing: `invalidate_dashboard` must come LAST. If the cache is
+    dropped before `record_disease` commits, a concurrent dashboard load rebuilds
+    from farm data that lacks the new disease and re-caches that stale view for
+    the full TTL.
+
+    Errors are swallowed-and-logged on purpose: this runs after the response, so
+    raising would only produce a silent failure with no one to report it to.
+    """
+    started = time.perf_counter()
+    try:
+        crop_guess = result.get("crop_guess", "crop")
+        await memory.record_disease(result["issue"], crop_guess, farm_id)
+
+        remedy = (result.get("natural_treatment") or {}).get("remedy", "")
+        await memory.add_memory(
+            farm_id,
+            "diagnosis",
+            f"{result['issue']} on {crop_guess} ({result.get('severity', '?')} severity). {remedy}".strip(),
+            {"issue": result["issue"], "crop": crop_guess, "severity": result.get("severity")},
+        )
+        invalidate_dashboard(farm_id)  # last - see docstring
+        logger.info(
+            "diagnose persist farm=%s ms=%.0f", farm_id, (time.perf_counter() - started) * 1000
+        )
+    except Exception:
+        # Not idempotent (record_disease prepends to a list) - log, never retry blindly.
+        logger.exception("diagnose persist failed for farm %s", farm_id)
+
+
 async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> dict[str, Any]:
+    """Vision-diagnose a crop photo. Pure: callers persist via `persist_diagnosis`."""
+    t0 = time.perf_counter()
     farm = await memory.get_farm(farm_id)
     lang = languages.info(farm.get("language"))
-    farm_ctx = await memory.context_blob(farm_id)
+    # Pass the farm we already hold - context_blob would otherwise re-query the
+    # same row.
+    farm_ctx = await memory.context_blob(farm_id, farm=farm)
+    t_db = time.perf_counter()
+
     prompt = (
         f"TARGET LANGUAGE for explanation_local: {languages.name(farm.get('language'))}\n"
         f"Farm context: {farm_ctx}\n"
@@ -57,17 +109,16 @@ async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> d
     result = await fireworks.vision(
         prompt, image_data_url, system=prompts.VISION_DIAGNOSIS, model=settings.model_vision
     )
-    if isinstance(result, dict) and result.get("issue") and result.get("category") != "healthy":
-        crop_guess = result.get("crop_guess", "crop")
-        await memory.record_disease(result["issue"], crop_guess, farm_id)
-        # store the diagnosis as recallable long-term memory
-        remedy = (result.get("natural_treatment") or {}).get("remedy", "")
-        await memory.add_memory(
-            farm_id,
-            "diagnosis",
-            f"{result['issue']} on {crop_guess} ({result.get('severity', '?')} severity). {remedy}".strip(),
-            {"issue": result["issue"], "crop": crop_guess, "severity": result.get("severity")},
-        )
+    t_vision = time.perf_counter()
+
+    logger.info(
+        "diagnose farm=%s db_pre_ms=%.0f vision_ms=%.0f total_ms=%.0f",
+        farm_id,
+        (t_db - t0) * 1000,
+        (t_vision - t_db) * 1000,
+        (t_vision - t0) * 1000,
+    )
+
     if isinstance(result, dict):
         result["language"] = lang
         return result

@@ -312,10 +312,16 @@ class FarmMemory:
         ]
 
     # ---------- compact context for prompts ----------
-    async def context_blob(self, farm_id: str) -> str:
+    async def context_blob(self, farm_id: str, farm: dict[str, Any] | None = None) -> str:
+        """Farm + recent activity as a JSON blob for agent prompts.
+
+        Pass `farm` if you already hold it - callers almost always do, and without
+        it this re-queries the same row for nothing.
+        """
         import json
 
-        farm = await self.get_farm(farm_id)
+        if farm is None:
+            farm = await self.get_farm(farm_id)
         events = await self.recent_events(6, farm_id)
         return json.dumps({"farm": farm, "recent_activity": events}, ensure_ascii=False)
 
