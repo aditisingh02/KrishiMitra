@@ -6,6 +6,7 @@ pydantic-settings==2.7.1
 python-multipart==0.0.20
 python-dotenv==1.0.1
 pyjwt[crypto]==2.10.1
+limits==5.8.0  # rate limiting (see app/core/limits.py)
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 alembic==1.14.0

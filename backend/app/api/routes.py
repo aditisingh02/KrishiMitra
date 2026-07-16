@@ -3,6 +3,7 @@ the farm is keyed by the Clerk user id."""
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Any
 
 import httpx
@@ -11,11 +12,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.agents import flows, orchestrator
-from app.core import languages
+from app.core import guards, languages, twilio_verify
 from app.core.auth import get_current_user
 from app.core.config import settings
+from app.core.limits import ip_rate_limit, user_rate_limit
+from app.core.uploads import read_image_data_url
 from app.services import i18n, monitor, weather
 from app.services.memory import memory
+
+logger = logging.getLogger("krishimitra.api")
 
 router = APIRouter(prefix="/api")
 
@@ -114,16 +119,19 @@ async def get_dashboard(
     return await flows.dashboard(user, force=refresh)
 
 
-@router.post("/consult")
+@router.post("/consult", dependencies=[Depends(user_rate_limit(settings.limit_consult, "consult"))])
 async def consult(req: ConsultRequest, user: str = Depends(get_current_user)) -> dict[str, Any]:
-    if not req.query.strip():
-        raise HTTPException(400, "Empty query")
     if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
-    return await orchestrator.consult(req.query, user)
+    try:
+        return await orchestrator.consult(req.query, user)
+    except guards.GuardRejection as e:
+        # Off-topic / empty input: answer politely instead of spending agent calls.
+        logger.info("consult rejected (%s) for %s", e.reason, user)
+        raise HTTPException(400, e.message)
 
 
-@router.post("/diagnose")
+@router.post("/diagnose", dependencies=[Depends(user_rate_limit(settings.limit_diagnose, "diagnose"))])
 async def diagnose(
     file: UploadFile = File(...),
     note: str = Form(""),
@@ -131,12 +139,8 @@ async def diagnose(
 ) -> dict[str, Any]:
     if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "Empty image")
-    mime = file.content_type or "image/jpeg"
-    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
-    diagnosis = await flows.diagnose_image(data_url, user, note)
+    data_url = await read_image_data_url(file)
+    diagnosis = await flows.diagnose_image(data_url, user, guards.sanitize(note))
     flows.invalidate_dashboard(user)  # a new disease record changes health/risk
     return {"diagnosis": diagnosis}
 
@@ -158,23 +162,37 @@ async def list_languages() -> dict[str, Any]:
     return {"languages": languages.LANGUAGES}
 
 
-@router.post("/i18n")
+@router.post("/i18n", dependencies=[Depends(ip_rate_limit(settings.limit_i18n, "i18n"))])
 async def translate_ui(req: TranslateRequest) -> dict[str, Any]:
-    """Translate a batch of UI strings into `lang` (cached). Public: no auth, the
-    landing page needs it before sign-in and the strings aren't sensitive."""
+    """Translate a batch of UI strings into `lang` (cached).
+
+    Public by design - the landing page needs it before sign-in and the strings
+    aren't sensitive. But it calls the LLM per uncached string, so it's bounded:
+    rate-limited by IP, with a cap on batch size and string length. Without those
+    caps a loop of unique strings is an open-ended bill.
+    """
+    if len(req.strings) > settings.i18n_max_strings:
+        raise HTTPException(
+            413, f"Too many strings - maximum is {settings.i18n_max_strings} per request"
+        )
+    oversized = [s for s in req.strings if len(s) > settings.i18n_max_string_len]
+    if oversized:
+        raise HTTPException(
+            413,
+            f"String exceeds {settings.i18n_max_string_len} characters - "
+            "this endpoint translates short UI labels only",
+        )
     return {"translations": await i18n.translate(req.strings, req.lang)}
 
 
 # ---------- soil health card ----------
-@router.post("/soil-card")
-async def soil_card(file: UploadFile = File(...), user: str = Depends(get_current_user)) -> dict[str, Any]:
+@router.post("/soil-card", dependencies=[Depends(user_rate_limit(settings.limit_soil_card, "soil_card"))])
+async def soil_card(
+    file: UploadFile = File(...), user: str = Depends(get_current_user)
+) -> dict[str, Any]:
     if not await memory.farm_exists(user):
         raise HTTPException(404, "No farm yet - complete onboarding")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "Empty file")
-    mime = file.content_type or "image/jpeg"
-    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+    data_url = await read_image_data_url(file)
     result = await flows.read_soil_card(data_url, user)
     flows.invalidate_dashboard(user)  # updated soil data changes the farm twin
     return result
@@ -195,7 +213,9 @@ async def mark_read(user: str = Depends(get_current_user)) -> dict[str, bool]:
     return {"ok": True}
 
 
-@router.post("/monitor/run")
+@router.post(
+    "/monitor/run", dependencies=[Depends(user_rate_limit(settings.limit_monitor_run, "monitor_run"))]
+)
 async def monitor_run(user: str = Depends(get_current_user)) -> dict[str, Any]:
     """Run the proactive monitor for the current farm on demand (also runs on a schedule)."""
     if not await memory.farm_exists(user):
@@ -205,10 +225,23 @@ async def monitor_run(user: str = Depends(get_current_user)) -> dict[str, Any]:
     return {"alerts_created": created, "unread": await memory.unread_count(user)}
 
 
-# ---------- Twilio WhatsApp inbound webhook (no Clerk auth; matched by phone) ----------
-@router.post("/whatsapp")
+# ---------- Twilio WhatsApp inbound webhook ----------
+# No Clerk auth (Twilio can't hold a session) - authenticity comes from the
+# X-Twilio-Signature HMAC instead. Without that check the `From` number is
+# attacker-controlled and any farm could be impersonated, so an unverified
+# request is rejected before any farm lookup or agent call.
+@router.post("/whatsapp", dependencies=[Depends(ip_rate_limit(settings.limit_whatsapp, "whatsapp"))])
 async def whatsapp_inbound(request: Request) -> Response:
     form = await request.form()
+
+    if settings.twilio_validate_signature:
+        params = {k: str(v) for k, v in form.items() if not hasattr(v, "filename")}
+        url = twilio_verify.webhook_url(str(request.url))
+        signature = request.headers.get("X-Twilio-Signature")
+        if not twilio_verify.is_valid_signature(url, params, signature):
+            logger.warning("rejected unsigned/invalid WhatsApp webhook from %s", request.client)
+            raise HTTPException(403, "Invalid Twilio signature")
+
     from_number = str(form.get("From", ""))
     body = str(form.get("Body", "")).strip()
     num_media = int(form.get("NumMedia", "0") or 0)
@@ -224,21 +257,31 @@ async def whatsapp_inbound(request: Request) -> Response:
     try:
         if num_media > 0:
             media_url = str(form.get("MediaUrl0"))
-            mime = str(form.get("MediaContentType0", "image/jpeg"))
+            mime = str(form.get("MediaContentType0", "image/jpeg")).split(";")[0].strip().lower()
+            if mime not in settings.allowed_image_type_set:
+                return _twiml(
+                    "I can only read photos (JPEG, PNG or WebP). Please send a clear "
+                    "photo of the affected leaf."
+                )
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.get(
                     media_url, auth=(settings.twilio_account_sid, settings.twilio_auth_token)
                 )
             r.raise_for_status()
+            if len(r.content) > settings.max_upload_bytes:
+                return _twiml("That photo is too large. Please send a smaller image.")
             data_url = f"data:{mime};base64,{base64.b64encode(r.content).decode()}"
-            diag = await flows.diagnose_image(data_url, farm_id, body)
+            diag = await flows.diagnose_image(data_url, farm_id, guards.sanitize(body))
             reply = _format_diagnosis(diag)
         elif body:
             res = await orchestrator.consult(body, farm_id)
             reply = _format_consult(res)
         else:
             reply = "Send me a question about your crops, or a photo of an affected leaf."
+    except guards.GuardRejection as e:
+        reply = e.message  # off-topic / empty: reply politely, don't run the agents
     except Exception:
+        logger.exception("whatsapp handler failed for farm %s", farm_id)
         reply = "Sorry, something went wrong. Please try again in a moment."
     return _twiml(reply)
 

@@ -1,0 +1,7 @@
+# Development / test dependencies.
+#   pip install -r requirements.txt -r requirements-dev.txt
+# Runtime deps live in requirements.txt - keep test-only packages out of it so
+# production images stay lean.
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1  # also a runtime dep; TestClient needs it explicitly

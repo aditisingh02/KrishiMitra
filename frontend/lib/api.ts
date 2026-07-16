@@ -61,10 +61,18 @@ export type ConsultResult = {
   agents_run: string[];
   agent_outputs: Record<string, any>;
   result: {
-    answer_en: string;
-    answer_local: string;
-    action_plan: { step: number; action: string; when: string; why: string }[];
-    confidence: number;
+    // Optional: the agents can fail to return usable JSON (`_parse_error`), or
+    // the agronomic safety guardrail can block the answer (`_blocked`). Callers
+    // must handle both rather than assume an answer is present.
+    answer_en?: string;
+    answer_local?: string;
+    action_plan?: { step: number; action: string; when: string; why: string }[];
+    confidence?: number;
+    /** The model's reply could not be parsed as JSON, even after one retry. */
+    _parse_error?: boolean;
+    /** Advice was withheld by the agronomic safety guardrail. */
+    _blocked?: boolean;
+    _safety?: { safe: boolean; blocking: string[]; warnings: string[] };
   };
   language: LangInfo;
 };

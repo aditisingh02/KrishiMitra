@@ -13,8 +13,8 @@ import json
 import logging
 from typing import Any
 
-from app.agents import prompts
-from app.core import languages
+from app.agents import prompts, safety
+from app.core import guards, languages
 from app.core.config import settings
 from app.core.fireworks import fireworks
 from app.services import knowledge, market, weather
@@ -104,6 +104,9 @@ async def _run_risk(query: str, farm: dict[str, Any], farm_id: str, wx: dict | N
 async def consult(query: str, farm_id: str) -> dict[str, Any]:
     from app.agents.flows import ensure_coords  # local import avoids any cycle
 
+    # Guard the input before it reaches any prompt or costs a single token.
+    query = guards.check_query(query)
+
     farm = await ensure_coords(farm_id, await memory.get_farm(farm_id))
     farm_ctx = await memory.context_blob(farm_id)
 
@@ -117,7 +120,10 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
     if past_blob:
         farm_ctx = f"{farm_ctx}\n\nPAST RELEVANT MEMORY:\n{past_blob}"
 
-    plan = await plan_tasks(query, farm_ctx)
+    # Farmer text is fenced so agents read it as data, never as instructions.
+    fenced = guards.fence(query)
+
+    plan = await plan_tasks(fenced, farm_ctx)
     tasks = plan["tasks"]
     logger.info("Planner chose: %s", tasks)
 
@@ -125,27 +131,27 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
 
     # crop_health must finish before natural_farming (dependency).
     if "crop_health" in tasks:
-        outputs["crop_health"] = await _run_crop_health(query, farm_ctx)
+        outputs["crop_health"] = await _run_crop_health(fenced, farm_ctx)
 
     # weather before risk (dependency). External calls may fail - capture, don't crash.
     parallel: dict[str, asyncio.Task] = {}
     if "weather" in tasks:
         try:
-            outputs["weather"] = await _run_weather(query, farm)
+            outputs["weather"] = await _run_weather(fenced, farm)
         except Exception as e:
             logger.warning("weather failed: %s", e)
             outputs["weather"] = {"error": str(e)}
     if "natural_farming" in tasks:
         parallel["natural_farming"] = asyncio.create_task(
-            _run_natural_farming(query, farm_ctx, outputs.get("crop_health"))
+            _run_natural_farming(fenced, farm_ctx, outputs.get("crop_health"))
         )
     if "market" in tasks:
-        parallel["market"] = asyncio.create_task(_run_market(query, farm))
+        parallel["market"] = asyncio.create_task(_run_market(fenced, farm))
     if "finance" in tasks:
-        parallel["finance"] = asyncio.create_task(_run_finance(query, farm))
+        parallel["finance"] = asyncio.create_task(_run_finance(fenced, farm))
     if "risk" in tasks:
         wx = outputs.get("weather") if not outputs.get("weather", {}).get("error") else None
-        parallel["risk"] = asyncio.create_task(_run_risk(query, farm, farm_id, wx))
+        parallel["risk"] = asyncio.create_task(_run_risk(fenced, farm, farm_id, wx))
 
     for name, task in parallel.items():
         try:
@@ -158,12 +164,18 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
     lang_name = languages.name(farm.get("language"))
     synth_user = (
         f"TARGET LANGUAGE for answer_local: {lang_name}\n\n"
-        f"FARM CONTEXT:\n{farm_ctx}\n\nFARMER QUESTION:\n{query}\n\n"
+        f"FARM CONTEXT:\n{farm_ctx}\n\nFARMER QUESTION:\n{fenced}\n\n"
         f"SPECIALIST OUTPUTS:\n{json.dumps(outputs, ensure_ascii=False)}"
     )
     final = await fireworks.chat_json(
         prompts.ACTION_PLANNER, synth_user, model=settings.model_agent, max_tokens=1400
     )
+
+    # ---- agronomic safety guardrail ----
+    # Nothing prescribing a substance or dosage reaches the farmer unverified.
+    final, report = safety.verify_advice(final)
+    if not report.safe:
+        logger.error("consult blocked for farm %s: %s", farm_id, report.blocking)
 
     # persist & record diagnosis if any
     diag = outputs.get("crop_health")
@@ -173,9 +185,10 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
         await memory.record_disease(diag["issue"], crop_name, farm_id)
     await memory.add_event("consult", query[:120], {"intent": plan.get("intent")}, farm_id)
 
-    # store this interaction as recallable long-term memory
+    # Store this interaction as recallable long-term memory. Never persist a
+    # blocked or unparseable answer - it would be recalled into future prompts.
     answer = final.get("answer_en") or final.get("answer_local") or ""
-    if answer and not final.get("_parse_error"):
+    if answer and not final.get("_parse_error") and not final.get("_blocked"):
         await memory.add_memory(
             farm_id,
             "consult",

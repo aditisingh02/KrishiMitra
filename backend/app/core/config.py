@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     # WhatsApp sender, e.g. "whatsapp:+14155238886" (Twilio sandbox)
     twilio_whatsapp_from: str = ""
+    # Inbound webhook signature validation. Every request to /api/whatsapp must
+    # carry a valid X-Twilio-Signature or it is rejected 403 - without this the
+    # webhook is forgeable and any farm can be impersonated by phone number.
+    # Only disable for local testing against a fake payload.
+    twilio_validate_signature: bool = True
+    # Twilio signs the exact public URL configured in its console. Behind a proxy
+    # the app may see a different scheme/host - set this to the public URL
+    # (e.g. https://api.example.com/api/whatsapp) if validation fails.
+    twilio_webhook_url: str = ""
+    twilio_force_https_webhook: bool = True
 
     # --- Autonomous monitoring ---
     monitor_enabled: bool = True
@@ -59,6 +69,31 @@ class Settings(BaseSettings):
     # Issuer like https://your-app.clerk.accounts.dev (dev) or your prod domain.
     clerk_issuer: str = ""
     clerk_secret_key: str = ""  # reserved for Clerk backend API calls if needed
+
+    # --- Rate limiting ---
+    # Every route that spends AI credits is throttled. Keyed by Clerk user id when
+    # authenticated, else client IP. Set `rate_limit_storage_uri` to a Redis URL
+    # (redis://...) when running more than one worker so limits are shared.
+    rate_limit_enabled: bool = True
+    rate_limit_storage_uri: str = ""
+    limit_consult: str = "20/minute"
+    limit_diagnose: str = "10/minute"  # vision calls are the most expensive
+    limit_soil_card: str = "10/minute"
+    limit_monitor_run: str = "5/minute"
+    limit_i18n: str = "60/minute"  # public: keyed by IP
+    limit_whatsapp: str = "60/minute"  # public webhook: keyed by IP
+
+    # --- Upload guards (protect memory + vision token spend) ---
+    max_upload_bytes: int = 5 * 1024 * 1024  # 5 MB
+    allowed_image_types: str = "image/jpeg,image/png,image/webp"
+
+    # --- i18n request caps (public endpoint: keep the work bounded) ---
+    i18n_max_strings: int = 200
+    i18n_max_string_len: int = 400
+
+    @property
+    def allowed_image_type_set(self) -> set[str]:
+        return {t.strip().lower() for t in self.allowed_image_types.split(",") if t.strip()}
 
     # --- Database (Render PostgreSQL) ---
     # Render injects DATABASE_URL as postgresql://...; async_database_url adapts it

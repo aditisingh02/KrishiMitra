@@ -109,7 +109,7 @@ async def get_prices(crops: list[str], state: str | None = None) -> dict[str, An
     # (every one times out), so we must send an explicit UA.
     # Fetch crops concurrently so total latency ~= the slowest single call, not the
     # sum - critical under the dashboard's tight market budget. Cap crops queried.
-    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "krishimitra-ai/1.0"}) as client:
+    async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "KrishiMitra/1.0"}) as client:
         results = await asyncio.gather(
             *(_crop_item(client, crop, state, key) for crop in crops[:6])
         )

@@ -17,19 +17,18 @@ natural farming - voice-first, in Hindi & English.
 
 ---
 
-## Brief coverage (Option B — Voice-Based Natural Farming Consultant)
+## What it does
 
-The brief asks to implement **2** of the four feature areas; KrishiMitra ships **all four**,
-voice-first and multilingual:
+Four capability areas, all voice-first and multilingual:
 
-| Requirement | Where |
+| Capability | Where |
 |---|---|
-| ✅ **Disease Identification & Treatment** | Photo → vision diagnosis + organic remedy (`Diagnose`); symptom-based `Crop Health` agent |
-| ✅ **Seed & Financial Guidance** | Multilayer cropping/seed designer (`Planner`); `Finance` agent on real schemes (PM-KISAN, PKVY, PMFBY) |
-| ✅ **Weather & Market Intelligence** | Real OpenWeather forecast + Agmarknet mandi prices, with sell/spray advice |
-| ✅ **Natural Farming Education** | `Natural Farming` agent + multilevel **Cropping Designer** (4-layer food forest), RAG-grounded |
+| **Disease Identification & Treatment** | Photo → vision diagnosis + organic remedy (`Diagnose`); symptom-based `Crop Health` agent |
+| **Seed & Financial Guidance** | Multilayer cropping/seed designer (`Planner`); `Finance` agent on real schemes (PM-KISAN, PKVY, PMFBY) |
+| **Weather & Market Intelligence** | Real OpenWeather forecast + Agmarknet mandi prices, with sell/spray advice |
+| **Natural Farming Education** | `Natural Farming` agent + multilevel **Cropping Designer** (4-layer food forest), RAG-grounded |
 
-**Technical constraints:** STT/TTS audio pipeline (Web Speech, per-language locale) · mobile/smart-board
+Built on an STT/TTS audio pipeline (Web Speech, per-language locale) · mobile/smart-board
 web UI (Next.js) · RAG corpus + strict JSON prompt guardrails for farming accuracy (see **Prompt design**).
 
 ---
@@ -197,6 +196,11 @@ python3.12 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # then fill in the keys (FIREWORKS is already set)
 uvicorn app.main:app --reload --port 8000
+```
+Run the tests (needs the dev extras):
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest            # 114 tests: auth, guardrails, rate limits, WhatsApp signature
 ```
 Set `CLERK_ISSUER` to your Clerk JWT issuer (e.g. `https://your-app.clerk.accounts.dev`).
 API docs at http://127.0.0.1:8000/docs

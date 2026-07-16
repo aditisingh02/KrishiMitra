@@ -59,4 +59,8 @@ async def get_current_user(
     user_id = claims.get("sub")
     if not user_id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token missing subject")
+    # Expose the verified id so the rate limiter can key on the user rather than
+    # the IP (see core.limits.user_or_ip). Dependencies resolve before the route
+    # body, so this is set by the time the limiter reads it.
+    request.state.user_id = user_id
     return user_id

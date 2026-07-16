@@ -1,5 +1,5 @@
 "use client";
-import { api, type ConsultResult } from "@/lib/api";
+import { api, ApiError, type ConsultResult } from "@/lib/api";
 import { Tag, Button, Card } from "@/components/ui/primitives";
 import { TextGenerate } from "@/components/ui/text-generate";
 import { motion, AnimatePresence } from "framer-motion";
@@ -33,6 +33,14 @@ const AGENT_META: Record<string, { icon: any; label: string }> = {
   risk: { icon: ShieldWarning, label: "Risk" },
 };
 
+/** The answer in the requested language, falling back to the other one. Returns
+ *  undefined when the agents produced nothing usable (`_parse_error`). */
+function answerText(res: ConsultResult, lang: "en" | "local"): string | undefined {
+  const { answer_en, answer_local } = res.result;
+  const text = lang === "en" ? answer_en || answer_local : answer_local || answer_en;
+  return text?.trim() ? text : undefined;
+}
+
 const SUGGESTIONS = [
   "My tomato leaves have white spots - should I spray neem tomorrow?",
   "Mere tamatar ke patte peele ho rahe hain, kya karu?",
@@ -45,6 +53,7 @@ export default function ConsultPage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ConsultResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<"en" | "local">("local");
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
@@ -90,12 +99,28 @@ export default function ConsultPage() {
     setQuery(text);
     setLoading(true);
     setResult(null);
+    setError(null);
     try {
       const res = await api.consult(text);
       setResult(res);
-      speak(res.result.answer_local || res.result.answer_en, res.language?.tts || sttLocale());
-    } catch {
-      alert(t("Something went wrong reaching the agents. Is the backend running?"));
+      const spoken = res.result.answer_local || res.result.answer_en;
+      if (spoken) speak(spoken, res.language?.tts || sttLocale());
+    } catch (e) {
+      // The server distinguishes these; surfacing its message is far more useful
+      // than a blanket "is the backend running?".
+      if (e instanceof ApiError) {
+        if (e.status === 429) {
+          setError(t("You're asking a bit too quickly. Please wait a moment and try again."));
+        } else if (e.status === 400) {
+          setError(e.message); // guard rejection - already farmer-friendly
+        } else if (e.status === 404) {
+          setError(t("Complete onboarding first so I know your farm."));
+        } else {
+          setError(t("Something went wrong reaching the agents. Please try again."));
+        }
+      } else {
+        setError(t("Couldn't reach KrishiMitra. Check your connection and try again."));
+      }
     } finally {
       setLoading(false);
     }
@@ -157,9 +182,31 @@ export default function ConsultPage() {
 
       {loading && <OrchestrationLoader />}
 
+      {error && !loading && (
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-start gap-3 rounded-md border border-line bg-pale-red p-4"
+        >
+          <ShieldWarning className="mt-0.5 h-4 w-4 shrink-0 text-pale-redink" />
+          <p className="text-sm leading-relaxed text-pale-redink">{error}</p>
+        </motion.div>
+      )}
+
       <AnimatePresence>
         {result && (
           <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
+            {/* The agronomic safety guardrail withheld the model's advice. Be explicit
+                that this is a deliberate safety hold, not a failure to understand. */}
+            {result.result._blocked && (
+              <div className="flex items-start gap-3 rounded-md border border-line bg-pale-yellow p-4">
+                <ShieldWarning className="mt-0.5 h-4 w-4 shrink-0 text-pale-yellowink" />
+                <p className="text-sm leading-relaxed text-pale-yellowink">
+                  {t("I held this answer back because I couldn't verify it against my agronomy knowledge base. I'd rather say nothing than give you a wrong dosage.")}
+                </p>
+              </div>
+            )}
+
             {/* plan trace */}
             <Card interactive={false}>
               <div className="mb-3 flex items-center gap-2">
@@ -200,9 +247,10 @@ export default function ConsultPage() {
                   </div>
                   <button
                     onClick={() =>
-                      lang === "en"
-                        ? speak(result.result.answer_en, "en-IN")
-                        : speak(result.result.answer_local, result.language?.tts || sttLocale())
+                      speak(
+                        answerText(result, lang) ?? "",
+                        lang === "en" ? "en-IN" : result.language?.tts || sttLocale(),
+                      )
                     }
                     className="flex h-8 w-8 items-center justify-center rounded-md bg-bone text-charcoal hover:bg-line"
                   >
@@ -210,19 +258,27 @@ export default function ConsultPage() {
                   </button>
                 </div>
               </div>
-              <TextGenerate
-                key={lang}
-                text={lang === "en" ? result.result.answer_en : result.result.answer_local}
-                className="font-serif text-xl leading-relaxed text-ink"
-              />
+              {answerText(result, lang) ? (
+                <TextGenerate
+                  key={lang}
+                  text={answerText(result, lang)!}
+                  className="font-serif text-xl leading-relaxed text-ink"
+                />
+              ) : (
+                // The agents returned nothing usable (unparseable even after the
+                // backend's retry). Say so plainly instead of rendering an empty card.
+                <p className="font-serif text-lg leading-relaxed text-muted">
+                  {t("I couldn't put together a clear answer for that. Please try asking again, in a bit more detail.")}
+                </p>
+              )}
             </Card>
 
             {/* action plan */}
-            {result.result.action_plan?.length > 0 && (
+            {(result.result.action_plan?.length ?? 0) > 0 && (
               <Card interactive={false}>
                 <span className="overline">{t("Today's action plan")}</span>
                 <div className="mt-4 space-y-0">
-                  {result.result.action_plan.map((step, i) => (
+                  {result.result.action_plan!.map((step, i) => (
                     <motion.div
                       key={step.step}
                       initial={{ opacity: 0, x: -6 }}

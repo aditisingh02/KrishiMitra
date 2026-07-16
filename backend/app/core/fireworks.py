@@ -83,20 +83,53 @@ class FireworksClient:
         temperature: float = 0.3,
         max_tokens: int = 2000,
         reasoning_effort: str | None = "low",
+        retry_on_parse_error: bool = True,
     ) -> dict[str, Any]:
-        """Chat that is expected to return a JSON object. Robust to fences."""
+        """Chat that is expected to return a JSON object. Robust to fences.
+
+        On an unparseable response we retry exactly once with a lower temperature
+        and a larger token budget - the two causes we actually see are sampling
+        noise and truncation (`finish_reason=length` starving the JSON). If the
+        retry also fails we return `{_raw, _parse_error}` and the caller degrades
+        gracefully rather than showing the farmer a broken section.
+        """
+        prompt = system + (
+            "\n\nReply ONLY with a valid JSON object. Fill every field with real "
+            "values - never use placeholders like '...' or 'string'."
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user},
+        ]
         content = await self.chat(
-            [
-                {"role": "system", "content": system + "\n\nReply ONLY with a valid JSON object. Fill every field with real values - never use placeholders like '...' or 'string'."},
-                {"role": "user", "content": user},
-            ],
+            messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             json_mode=True,
             reasoning_effort=reasoning_effort,
         )
-        return _safe_json(content)
+        result = _safe_json(content)
+        if not result.get("_parse_error") or not retry_on_parse_error:
+            return result
+
+        logger.warning("JSON parse failed - retrying once (model=%s)", model or settings.model_agent)
+        retry_messages = [
+            {"role": "system", "content": prompt + "\n\nYour previous reply was not valid JSON. Return a single, complete, valid JSON object and nothing else."},
+            {"role": "user", "content": user},
+        ]
+        content = await self.chat(
+            retry_messages,
+            model=model,
+            temperature=min(temperature, 0.1),
+            max_tokens=int(max_tokens * 1.5),
+            json_mode=True,
+            reasoning_effort=reasoning_effort,
+        )
+        retried = _safe_json(content)
+        if retried.get("_parse_error"):
+            logger.error("JSON parse failed after retry (model=%s)", model or settings.model_agent)
+        return retried
 
     async def embed(self, text: str, *, model: str | None = None) -> list[float]:
         """Return an embedding vector for `text` (OpenAI-compatible /embeddings).
