@@ -77,6 +77,29 @@ export type ConsultResult = {
   language: LangInfo;
 };
 
+export type TaskKind = "sowing" | "irrigation" | "nutrition" | "spray" | "scouting" | "harvest" | "other";
+
+export type CalendarTask = {
+  id: number;
+  cycle_id: number;
+  title: string;
+  detail: string | null;
+  kind: TaskKind;
+  /** ISO date (YYYY-MM-DD), computed server-side from the model's day offset. */
+  due_on: string;
+  done: boolean;
+  notified_on: string | null;
+};
+
+export type CropCycle = {
+  id: number;
+  crop: string;
+  sown_on: string;
+  expected_harvest_on: string | null;
+  status: "active" | "harvested" | "abandoned";
+  tasks: CalendarTask[];
+};
+
 export type WhatsAppStatus = {
   /** Both sides ready: the farm has a number AND the server has Twilio creds. */
   linked: boolean;
@@ -173,6 +196,13 @@ export const api = {
     jpost<{ design: any }>("/api/cropping-design", { land, location, goals }),
   diagnose: (file: File, note = "") => upload<{ diagnosis: any }>("/api/diagnose", file, { note }),
   soilCard: (file: File) => upload<{ soil: any; extracted: any }>("/api/soil-card", file),
+  calendar: () => jget<{ cycles: CropCycle[]; today: string }>("/api/calendar"),
+  createCycle: (crop: string, sown_on: string) =>
+    jpost<{ cycle: CropCycle }>("/api/calendar/cycles", { crop, sown_on }),
+  setTaskDone: (id: number, done: boolean) =>
+    jpost<{ ok: boolean }>(`/api/calendar/tasks/${id}`, { done }, "PATCH"),
+  deleteCycle: (id: number) => jpost<{ ok: boolean }>(`/api/calendar/cycles/${id}`, {}, "DELETE"),
+  markHarvested: (id: number) => jpost<{ ok: boolean }>(`/api/calendar/cycles/${id}/harvested`, {}),
   whatsappStatus: () => jget<WhatsAppStatus>("/api/whatsapp/status"),
   whatsappTest: () => jpost<{ sent: boolean; to: string }>("/api/whatsapp/test", {}),
   notifications: () => jget<{ items: Notification[]; unread: number }>("/api/notifications"),

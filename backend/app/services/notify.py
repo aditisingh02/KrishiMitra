@@ -100,3 +100,23 @@ async def send_alert(phone: str, farmer: str, body: str, lang: str | None) -> bo
 async def send_test(phone: str, lang: str | None) -> bool:
     """Send the 'your WhatsApp is linked' confirmation."""
     return await send_whatsapp(phone, f"🌱 {await _localize(TEST_MESSAGE, lang)}")
+
+
+async def localize_task(task: dict, lang: str | None) -> str:
+    """Render a calendar task as a reminder in the farmer's language.
+
+    Task text is model-generated per crop, so unlike the fixed templates above it
+    can't be pre-translated - it goes through the same cached translator the UI
+    uses, keyed on the task text itself.
+    """
+    parts = [task["title"]]
+    if task.get("detail"):
+        parts.append(task["detail"])
+    if not lang or lang == "en":
+        return "\n\n".join(parts)
+    try:
+        tr = await i18n.translate(parts, lang)
+        return "\n\n".join(tr.get(p, p) for p in parts)
+    except Exception as e:  # noqa: BLE001 - a reminder in English beats no reminder
+        logger.warning("task localization failed (%s): %s", lang, e)
+        return "\n\n".join(parts)

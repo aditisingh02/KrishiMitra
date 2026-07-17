@@ -16,6 +16,14 @@ from app.services import monitor
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch):
     monkeypatch.setattr(monitor.settings, "monitor_concurrency", 8)
+    # A cycle runs risk alerts AND calendar reminders per farm. These tests are
+    # about the risk-alert fan-out, so stub the calendar (it would otherwise reach
+    # for a database that isn't running here). Calendar reminders have their own
+    # tests in test_calendar.py.
+    async def no_calendar(farm):
+        return 0
+
+    monkeypatch.setattr(monitor, "check_calendar", no_calendar)
 
 
 def _farms(n: int) -> list[dict]:

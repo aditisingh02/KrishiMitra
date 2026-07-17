@@ -6,6 +6,7 @@ import {
   Microphone,
   Scan,
   CalendarBlank,
+  CalendarCheck,
   TrendUp,
 } from "@phosphor-icons/react";
 import { UserButton } from "@clerk/nextjs";
@@ -21,6 +22,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: SquaresFour },
   { href: "/consult", label: "Consult", icon: Microphone },
   { href: "/diagnose", label: "Diagnose", icon: Scan },
+  { href: "/calendar", label: "Calendar", icon: CalendarCheck },
   { href: "/planner", label: "Planner", icon: CalendarBlank },
   { href: "/market", label: "Market", icon: TrendUp },
 ];

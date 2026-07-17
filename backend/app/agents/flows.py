@@ -6,10 +6,10 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from app.agents import prompts
+from app.agents import prompts, safety
 from app.core import languages
 from app.core.config import settings
 from app.core.fireworks import fireworks
@@ -142,6 +142,111 @@ async def read_soil_card(image_data_url: str, farm_id: str) -> dict[str, Any]:
         return {"soil": merged, "extracted": result}
     farm = await memory.get_farm(farm_id)
     return {"soil": farm.get("soil", {}), "extracted": result}
+
+
+# ---------- crop calendar ----------
+VALID_TASK_KINDS = {"sowing", "irrigation", "nutrition", "spray", "scouting", "harvest", "other"}
+MAX_CYCLE_DAYS = 400  # a season, generously; anything beyond is a model error
+
+
+async def generate_calendar(farm_id: str, crop: str, sown_on: str) -> dict[str, Any]:
+    """Build the sowing -> harvest task timeline for one planting.
+
+    The model returns `day_offset` (days after sowing) and we do the date maths
+    here. Asking an LLM for calendar dates directly invites silent arithmetic
+    errors, and a reminder that fires on the wrong day is worse than no reminder.
+
+    Every generated task passes the agronomic safety guardrail before it's stored:
+    these are dosage instructions a farmer will act on weeks from now, when nobody
+    is watching the model's output.
+    """
+    farm = await memory.get_farm(farm_id)
+    sow_date = date.fromisoformat(sown_on)
+
+    kb = knowledge.context_for(f"{crop} natural farming sowing harvest pest nutrition")
+    user = (
+        f"CROP: {crop}\nSOWING DATE: {sown_on}\n"
+        f"LOCATION: {farm.get('location', 'India')}\n"
+        f"STATE: {farm.get('state') or 'unknown'}\n"
+        f"SOIL: {json.dumps(farm.get('soil', {}))}\n\n"
+        f"KNOWLEDGE BASE:\n{kb}"
+    )
+    result = await fireworks.chat_json(
+        prompts.CROP_CALENDAR, user, model=settings.model_agent, max_tokens=2000
+    )
+    if result.get("_parse_error"):
+        raise ValueError("Couldn't generate a calendar for that crop. Please try again.")
+
+    tasks: list[dict[str, Any]] = []
+    for raw in result.get("tasks", []):
+        task = _calendar_task(raw, sow_date)
+        if task:
+            tasks.append(task)
+    if not tasks:
+        raise ValueError("Couldn't generate a calendar for that crop. Please try again.")
+
+    # Safety-check each task ON ITS OWN, not the calendar as one blob.
+    # `safety.check_text` pools every quantity in the text it's given and compares
+    # against the KB entries named in that same text. That's right for a consult
+    # answer about one problem, but on a multi-task calendar it cross-contaminates:
+    # a correct "neem oil 5ml/litre" task gets checked against Jeevamrut's
+    # quantities (because another task mentioned Jeevamrut) and wrongly rejected.
+    # Per-task keeps each dosage next to its own preparation.
+    for task in tasks:
+        text = f"{task['title']} {task['detail'] or ''}"
+        report = safety.check_text(text)
+        if not report.safe:
+            logger.error(
+                "calendar blocked for farm %s (%s) on task %r: %s",
+                farm_id, crop, task["title"], report.blocking,
+            )
+            raise ValueError(
+                "I couldn't verify the treatments in that calendar against my agronomy "
+                "knowledge base, so I haven't saved it. Please try again."
+            )
+
+    tasks.sort(key=lambda t: t["due_on"])
+    duration = _clamp_duration(result.get("duration_days"), tasks, sow_date)
+    harvest_on = (sow_date + timedelta(days=duration)).isoformat()
+    return {"tasks": tasks, "expected_harvest_on": harvest_on, "duration_days": duration}
+
+
+def _calendar_task(raw: Any, sow_date: date) -> dict[str, Any] | None:
+    """Validate one model-produced task and turn its offset into a real date.
+
+    Anything malformed is dropped rather than defaulted: a task silently pinned to
+    day 0 would fire a reminder immediately and teach the farmer to ignore them.
+    """
+    if not isinstance(raw, dict):
+        return None
+    title = (raw.get("title") or "").strip()
+    if not title:
+        return None
+    try:
+        offset = int(raw.get("day_offset"))
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= offset <= MAX_CYCLE_DAYS:
+        return None
+    kind = raw.get("kind")
+    return {
+        "title": title[:120],
+        "detail": (raw.get("detail") or "").strip()[:500] or None,
+        "kind": kind if kind in VALID_TASK_KINDS else "other",
+        "due_on": (sow_date + timedelta(days=offset)).isoformat(),
+    }
+
+
+def _clamp_duration(value: Any, tasks: list[dict[str, Any]], sow_date: date) -> int:
+    """Trust the model's duration only if it's sane; else derive it from the tasks."""
+    try:
+        duration = int(value)
+        if 0 < duration <= MAX_CYCLE_DAYS:
+            return duration
+    except (TypeError, ValueError):
+        pass
+    last = max((date.fromisoformat(t["due_on"]) for t in tasks), default=sow_date)
+    return max((last - sow_date).days, 1)
 
 
 async def cropping_design(land: str, location: str, goals: str) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hmac
 import logging
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -217,6 +218,102 @@ async def soil_card(
 
 
 # ---------- notifications ----------
+# ---------- crop calendar ----------
+class CycleCreate(BaseModel):
+    crop: str = Field(min_length=1, max_length=60)
+    sown_on: str  # ISO date, YYYY-MM-DD
+
+
+class TaskUpdate(BaseModel):
+    done: bool
+
+
+def _parse_sown_on(value: str) -> date:
+    try:
+        sown = date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(400, "sown_on must be a date like 2026-07-01") from None
+    # A sowing date far in the future or decades back is a typo, and it would
+    # generate a whole calendar of nonsense reminders.
+    today = date.today()
+    if sown > today + timedelta(days=365):
+        raise HTTPException(400, "That sowing date is too far in the future.")
+    if sown < today - timedelta(days=365 * 2):
+        raise HTTPException(400, "That sowing date is too far in the past.")
+    return sown
+
+
+@router.get("/calendar")
+async def get_calendar(user: str = Depends(get_current_user)) -> dict[str, Any]:
+    """All crop cycles for this farm plus their tasks."""
+    cycles = await memory.list_cycles(user)
+    tasks = await memory.list_tasks(user)
+    by_cycle: dict[int, list[dict[str, Any]]] = {}
+    for t in tasks:
+        by_cycle.setdefault(t["cycle_id"], []).append(t)
+    return {
+        "cycles": [{**c, "tasks": by_cycle.get(c["id"], [])} for c in cycles],
+        "today": date.today().isoformat(),
+    }
+
+
+@router.post(
+    "/calendar/cycles",
+    dependencies=[Depends(user_rate_limit(settings.limit_calendar, "calendar"))],
+)
+async def create_cycle(req: CycleCreate, user: str = Depends(get_current_user)) -> dict[str, Any]:
+    """Start a crop cycle and generate its sowing -> harvest task timeline."""
+    if not await memory.farm_exists(user):
+        raise HTTPException(404, "No farm yet - complete onboarding")
+    _parse_sown_on(req.sown_on)
+    crop = guards.sanitize(req.crop)
+    if not crop:
+        raise HTTPException(400, "Tell me which crop you sowed.")
+
+    try:
+        plan = await flows.generate_calendar(user, crop, req.sown_on)
+    except ValueError as e:
+        # Generation failed or the safety guardrail blocked it - the message is
+        # already farmer-readable.
+        raise HTTPException(422, str(e)) from None
+
+    cycle_id = await memory.add_cycle(user, crop, req.sown_on, plan["expected_harvest_on"])
+    await memory.add_tasks(user, cycle_id, plan["tasks"])
+    await memory.add_event(
+        "crop_cycle",
+        f"Started {crop} cycle (sown {req.sown_on})",
+        {"crop": crop, "sown_on": req.sown_on, "tasks": len(plan["tasks"])},
+        user,
+    )
+    flows.invalidate_dashboard(user)
+    cycle = await memory.get_cycle(user, cycle_id)
+    return {"cycle": {**cycle, "tasks": await memory.list_tasks(user, cycle_id=cycle_id)}}
+
+
+@router.patch("/calendar/tasks/{task_id}")
+async def update_task(
+    task_id: int, req: TaskUpdate, user: str = Depends(get_current_user)
+) -> dict[str, Any]:
+    if not await memory.set_task_done(user, task_id, req.done):
+        raise HTTPException(404, "Task not found")
+    return {"ok": True}
+
+
+@router.delete("/calendar/cycles/{cycle_id}")
+async def delete_cycle(cycle_id: int, user: str = Depends(get_current_user)) -> dict[str, Any]:
+    if not await memory.delete_cycle(user, cycle_id):
+        raise HTTPException(404, "Crop cycle not found")
+    flows.invalidate_dashboard(user)
+    return {"ok": True}
+
+
+@router.post("/calendar/cycles/{cycle_id}/harvested")
+async def mark_harvested(cycle_id: int, user: str = Depends(get_current_user)) -> dict[str, Any]:
+    if not await memory.set_cycle_status(user, cycle_id, "harvested"):
+        raise HTTPException(404, "Crop cycle not found")
+    return {"ok": True}
+
+
 @router.get("/metrics")
 async def agent_metrics(request: Request) -> dict[str, Any]:
     """Per-agent latency / failure / token counters.

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, Integer, String, Text, func, select
+from sqlalchemy import Index, Integer, String, Text, delete, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +26,19 @@ from app.core.fireworks import fireworks
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _task_dict(t: "CalendarTask") -> dict[str, Any]:
+    return {
+        "id": t.id,
+        "cycle_id": t.cycle_id,
+        "title": t.title,
+        "detail": t.detail,
+        "kind": t.kind,
+        "due_on": t.due_on,
+        "done": bool(t.done),
+        "notified_on": t.notified_on,
+    }
 
 
 def _norm_phone(phone: str | None) -> str | None:
@@ -72,6 +85,50 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text)
     read: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+
+class CropCycle(Base):
+    """One planting of one crop: sowing -> harvest.
+
+    The farm profile's `crops` list says *what* is growing; a cycle says *when* it
+    went in, which is what every agronomic recommendation is actually keyed on
+    (spray at 25 days, top-dress at 40, harvest at 110).
+    """
+
+    __tablename__ = "crop_cycles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    farm_id: Mapped[str] = mapped_column(String, index=True)
+    crop: Mapped[str] = mapped_column(String)
+    sown_on: Mapped[str] = mapped_column(String)  # ISO date, YYYY-MM-DD
+    expected_harvest_on: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")  # active|harvested|abandoned
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+
+class CalendarTask(Base):
+    """A dated agronomic task on a crop cycle ("Spray neem", "Top-dress").
+
+    `due_on` is computed in Python from the model's day-offset, never taken from
+    the model directly - see flows.generate_calendar.
+
+    `notified_on` is the reminder de-dupe: a date once a WhatsApp reminder has
+    gone out, NULL before. Without it, a daily monitor would re-remind every
+    single day until the task is done.
+    """
+
+    __tablename__ = "calendar_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    farm_id: Mapped[str] = mapped_column(String, index=True)
+    cycle_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String)  # spray|irrigation|nutrition|scouting|harvest|sowing|other
+    due_on: Mapped[str] = mapped_column(String, index=True)  # ISO date
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    notified_on: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, default=_now)
 
 
@@ -312,6 +369,170 @@ class FarmMemory:
         ]
 
     # ---------- compact context for prompts ----------
+    # ---------- crop calendar ----------
+    async def add_cycle(
+        self, farm_id: str, crop: str, sown_on: str, expected_harvest_on: str | None
+    ) -> int:
+        async with SessionLocal() as s:
+            cycle = CropCycle(
+                farm_id=farm_id,
+                crop=crop,
+                sown_on=sown_on,
+                expected_harvest_on=expected_harvest_on,
+                status="active",
+            )
+            s.add(cycle)
+            await s.commit()
+            return cycle.id
+
+    async def list_cycles(self, farm_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
+        async with SessionLocal() as s:
+            q = select(CropCycle).where(CropCycle.farm_id == farm_id)
+            if active_only:
+                q = q.where(CropCycle.status == "active")
+            rows = (await s.execute(q.order_by(CropCycle.sown_on.desc()))).scalars().all()
+            return [
+                {
+                    "id": c.id,
+                    "crop": c.crop,
+                    "sown_on": c.sown_on,
+                    "expected_harvest_on": c.expected_harvest_on,
+                    "status": c.status,
+                }
+                for c in rows
+            ]
+
+    async def get_cycle(self, farm_id: str, cycle_id: int) -> dict[str, Any] | None:
+        """Scoped by farm_id on purpose - never look a cycle up by id alone."""
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(CropCycle).where(
+                        CropCycle.id == cycle_id, CropCycle.farm_id == farm_id
+                    )
+                )
+            ).scalars().first()
+            if not row:
+                return None
+            return {
+                "id": row.id,
+                "crop": row.crop,
+                "sown_on": row.sown_on,
+                "expected_harvest_on": row.expected_harvest_on,
+                "status": row.status,
+            }
+
+    async def set_cycle_status(self, farm_id: str, cycle_id: int, status: str) -> bool:
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(CropCycle).where(
+                        CropCycle.id == cycle_id, CropCycle.farm_id == farm_id
+                    )
+                )
+            ).scalars().first()
+            if not row:
+                return False
+            row.status = status
+            await s.commit()
+            return True
+
+    async def delete_cycle(self, farm_id: str, cycle_id: int) -> bool:
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(CropCycle).where(
+                        CropCycle.id == cycle_id, CropCycle.farm_id == farm_id
+                    )
+                )
+            ).scalars().first()
+            if not row:
+                return False
+            await s.execute(
+                delete(CalendarTask).where(
+                    CalendarTask.cycle_id == cycle_id, CalendarTask.farm_id == farm_id
+                )
+            )
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    async def add_tasks(self, farm_id: str, cycle_id: int, tasks: list[dict[str, Any]]) -> int:
+        """Bulk-insert generated tasks. Returns how many landed."""
+        if not tasks:
+            return 0
+        async with SessionLocal() as s:
+            for t in tasks:
+                s.add(
+                    CalendarTask(
+                        farm_id=farm_id,
+                        cycle_id=cycle_id,
+                        title=t["title"],
+                        detail=t.get("detail"),
+                        kind=t.get("kind", "other"),
+                        due_on=t["due_on"],
+                    )
+                )
+            await s.commit()
+        return len(tasks)
+
+    async def list_tasks(
+        self,
+        farm_id: str,
+        *,
+        cycle_id: int | None = None,
+        include_done: bool = True,
+    ) -> list[dict[str, Any]]:
+        async with SessionLocal() as s:
+            q = select(CalendarTask).where(CalendarTask.farm_id == farm_id)
+            if cycle_id is not None:
+                q = q.where(CalendarTask.cycle_id == cycle_id)
+            if not include_done:
+                q = q.where(CalendarTask.done == 0)
+            rows = (await s.execute(q.order_by(CalendarTask.due_on))).scalars().all()
+            return [_task_dict(t) for t in rows]
+
+    async def due_tasks(self, farm_id: str, on_or_before: str) -> list[dict[str, Any]]:
+        """Undone, un-notified tasks due on/before a date - the reminder queue."""
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(CalendarTask)
+                    .where(
+                        CalendarTask.farm_id == farm_id,
+                        CalendarTask.done == 0,
+                        CalendarTask.notified_on.is_(None),
+                        CalendarTask.due_on <= on_or_before,
+                    )
+                    .order_by(CalendarTask.due_on)
+                )
+            ).scalars().all()
+            return [_task_dict(t) for t in rows]
+
+    async def set_task_done(self, farm_id: str, task_id: int, done: bool) -> bool:
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(CalendarTask).where(
+                        CalendarTask.id == task_id, CalendarTask.farm_id == farm_id
+                    )
+                )
+            ).scalars().first()
+            if not row:
+                return False
+            row.done = 1 if done else 0
+            await s.commit()
+            return True
+
+    async def mark_task_notified(self, task_id: int, on_date: str) -> None:
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(select(CalendarTask).where(CalendarTask.id == task_id))
+            ).scalars().first()
+            if row:
+                row.notified_on = on_date
+                await s.commit()
+
     async def context_blob(self, farm_id: str, farm: dict[str, Any] | None = None) -> str:
         """Farm + recent activity as a JSON blob for agent prompts.
 

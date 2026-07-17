@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     # slow; lower it if you start seeing provider 429s.
     monitor_concurrency: int = 8
 
+    # --- Crop calendar reminders ---
+    # Remind this many days before a task is due, so there's time to actually act
+    # (buy neem, ferment Jeevamrut) rather than being told on the day.
+    calendar_reminder_lead_days: int = 2
+    # Cap reminders per farm per cycle. A backlog of overdue tasks must not turn
+    # into a wall of WhatsApp messages - that's how farmers learn to ignore them.
+    calendar_reminders_per_cycle: int = 3
+
     # --- Rate limiting ---
     # Every route that spends AI credits is throttled. Keyed by Clerk user id when
     # authenticated, else client IP. Set `rate_limit_storage_uri` to a Redis URL
@@ -103,6 +111,7 @@ class Settings(BaseSettings):
     limit_diagnose: str = "10/minute"  # vision calls are the most expensive
     limit_soil_card: str = "10/minute"
     limit_monitor_run: str = "5/minute"
+    limit_calendar: str = "10/minute"  # each cycle generation is an LLM call
     limit_i18n: str = "60/minute"  # public: keyed by IP
     limit_whatsapp: str = "60/minute"  # public webhook: keyed by IP
     # Sends a real, billed message to a user-supplied number - keep it tight.
