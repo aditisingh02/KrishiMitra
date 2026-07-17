@@ -8,6 +8,7 @@ python-dotenv==1.0.1
 pillow==11.1.0  # server-side image downscaling (see app/core/uploads.py)
 pyjwt[crypto]==2.10.1
 limits==5.8.0  # rate limiting (see app/core/limits.py)
+sentry-sdk[fastapi]==2.20.0  # error tracking; inert unless SENTRY_DSN is set
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 alembic==1.14.0

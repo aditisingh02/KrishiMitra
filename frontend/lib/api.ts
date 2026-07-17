@@ -77,6 +77,18 @@ export type ConsultResult = {
   language: LangInfo;
 };
 
+export type WhatsAppStatus = {
+  /** Both sides ready: the farm has a number AND the server has Twilio creds. */
+  linked: boolean;
+  /** The farmer can fix this one (add a number). */
+  has_phone: boolean;
+  /** Only an operator can fix this one (server config). */
+  provider_configured: boolean;
+  phone_masked: string | null;
+  /** Twilio sandbox opt-in code, when the server is running on the sandbox. */
+  sandbox_join_code: string | null;
+};
+
 export type Notification = {
   id: number;
   level: "info" | "warning" | "danger" | "ok";
@@ -161,6 +173,8 @@ export const api = {
     jpost<{ design: any }>("/api/cropping-design", { land, location, goals }),
   diagnose: (file: File, note = "") => upload<{ diagnosis: any }>("/api/diagnose", file, { note }),
   soilCard: (file: File) => upload<{ soil: any; extracted: any }>("/api/soil-card", file),
+  whatsappStatus: () => jget<WhatsAppStatus>("/api/whatsapp/status"),
+  whatsappTest: () => jpost<{ sent: boolean; to: string }>("/api/whatsapp/test", {}),
   notifications: () => jget<{ items: Notification[]; unread: number }>("/api/notifications"),
   markRead: () => jpost<{ ok: boolean }>("/api/notifications/read", {}),
   runMonitor: () => jpost<{ alerts_created: number; unread: number }>("/api/monitor/run", {}),

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # (e.g. https://api.example.com/api/whatsapp) if validation fails.
     twilio_webhook_url: str = ""
     twilio_force_https_webhook: bool = True
+    # Twilio's WhatsApp sandbox only delivers to numbers that have opted in by
+    # sending "join <code>" to the sandbox number. Surface the code in the UI so a
+    # farmer can link themselves instead of hitting a silent delivery failure.
+    twilio_sandbox_join_code: str = ""
 
     # --- Autonomous monitoring ---
     monitor_enabled: bool = True
@@ -65,10 +69,29 @@ class Settings(BaseSettings):
     # and diagnoses; bypass with GET /dashboard?refresh=1.
     dashboard_cache_ttl_minutes: float = 30.0
 
+    # --- Observability ---
+    # Optional. Empty DSN = error tracking off (the app runs identically without it).
+    # Farmer content (questions, photos, farm data) is scrubbed before send - see
+    # app/core/observability.py.
+    sentry_dsn: str = ""
+    sentry_environment: str = "development"
+    sentry_release: str = ""
+    sentry_traces_sample_rate: float = 0.1  # 10% of requests traced
+    # Exposes /api/metrics (agent latency/failures/tokens). Off by default: it
+    # describes internal AI spend and shouldn't be world-readable.
+    metrics_enabled: bool = False
+    metrics_token: str = ""  # required to read /api/metrics when enabled
+
     # --- Auth (Clerk) ---
     # Issuer like https://your-app.clerk.accounts.dev (dev) or your prod domain.
     clerk_issuer: str = ""
     clerk_secret_key: str = ""  # reserved for Clerk backend API calls if needed
+
+    # How many farms the monitor evaluates at once. Each farm costs an LLM risk
+    # agent plus weather/market fetches, so this trades cycle wall-time against
+    # burst load on Fireworks and the upstream data APIs. Raise it if cycles are
+    # slow; lower it if you start seeing provider 429s.
+    monitor_concurrency: int = 8
 
     # --- Rate limiting ---
     # Every route that spends AI credits is throttled. Keyed by Clerk user id when
@@ -82,6 +105,8 @@ class Settings(BaseSettings):
     limit_monitor_run: str = "5/minute"
     limit_i18n: str = "60/minute"  # public: keyed by IP
     limit_whatsapp: str = "60/minute"  # public webhook: keyed by IP
+    # Sends a real, billed message to a user-supplied number - keep it tight.
+    limit_whatsapp_test: str = "3/hour"
 
     # --- Upload guards (protect memory + vision token spend) ---
     max_upload_bytes: int = 5 * 1024 * 1024  # 5 MB

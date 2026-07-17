@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from app.agents import flows
 from app.core.config import settings
@@ -40,9 +41,13 @@ async def check_farm(farm: dict) -> int:
         created += 1
         phone = farm.get("phone")
         if phone:
-            await notify.send_whatsapp(
+            # alert["text"] is already in the farm's language (dashboard localizes
+            # it); send_alert localizes the header that wraps it.
+            await notify.send_alert(
                 phone,
-                f"🌱 KrishiMitra alert for {farm.get('farmer','your farm')}:\n\n{alert['text']}",
+                farm.get("farmer") or "your farm",
+                alert["text"],
+                farm.get("language"),
             )
     if created:
         logger.info("monitor: %s new alerts for %s", created, farm_id)
@@ -50,11 +55,56 @@ async def check_farm(farm: dict) -> int:
 
 
 async def run_once() -> dict:
+    """Check every farm, a bounded number at a time.
+
+    Previously this awaited each farm in turn, so a cycle took
+    (farms x dashboard latency) - and a dashboard runs an LLM risk agent plus
+    weather and market fetches, so ~10s each. At 500 farms that's ~90 minutes of
+    wall clock, and it grows linearly: eventually a daily cycle can't finish in a
+    day.
+
+    Farms are independent, so run them concurrently. The semaphore is the point:
+    unbounded `gather` over every farm would fire N simultaneous LLM calls and
+    trip provider rate limits (and our own), turning a slow cycle into a failing
+    one.
+    """
     farms = await memory.all_farms()
+    if not farms:
+        return {"farms_checked": 0, "alerts_created": 0}
+
+    started = time.perf_counter()
+    sem = asyncio.Semaphore(max(1, settings.monitor_concurrency))
+
+    async def guarded(farm: dict) -> int:
+        async with sem:
+            return await check_farm(farm)
+
+    results = await asyncio.gather(
+        *(guarded(f) for f in farms), return_exceptions=True
+    )
+
     total = 0
-    for farm in farms:
-        total += await check_farm(farm)
-    return {"farms_checked": len(farms), "alerts_created": total}
+    failed = 0
+    for farm, res in zip(farms, results):
+        if isinstance(res, BaseException):
+            # check_farm already guards the dashboard; this catches anything else
+            # so one bad farm can't abort the cycle for everyone.
+            logger.warning("monitor: farm %s failed: %s", farm.get("id"), res)
+            failed += 1
+        else:
+            total += res
+
+    elapsed = time.perf_counter() - started
+    logger.info(
+        "monitor cycle: %s farms in %.1fs (concurrency=%s, %s failed)",
+        len(farms), elapsed, settings.monitor_concurrency, failed,
+    )
+    return {
+        "farms_checked": len(farms),
+        "alerts_created": total,
+        "farms_failed": failed,
+        "seconds": round(elapsed, 1),
+    }
 
 
 async def loop() -> None:

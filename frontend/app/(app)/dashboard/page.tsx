@@ -5,6 +5,7 @@ import { AppLanguageSelect } from "@/components/shell/app-language-select";
 import { Gauge } from "@/components/ui/gauge";
 import { WeatherScene } from "@/components/ui/weather-scene";
 import { useT } from "@/lib/i18n-runtime";
+import { WhatsAppLink } from "@/components/shell/whatsapp-link";
 import { motion } from "framer-motion";
 import {
   CloudRain,
@@ -120,6 +121,10 @@ export default function DashboardPage() {
           })}
         </div>
       </section>
+
+      {/* WhatsApp is the delivery channel for the alerts above - if it's not
+          linked, those alerts silently never reach the farmer off-app. */}
+      <WhatsAppLink />
 
       {/* weather + risk */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">

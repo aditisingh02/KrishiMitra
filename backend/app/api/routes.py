@@ -3,6 +3,7 @@ the farm is keyed by the Clerk user id."""
 from __future__ import annotations
 
 import base64
+import hmac
 import logging
 from typing import Any
 
@@ -26,8 +27,9 @@ from app.core import guards, languages, twilio_verify
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.limits import ip_rate_limit, user_rate_limit
+from app.core.observability import metrics
 from app.core.uploads import downscale_image, read_image_data_url
-from app.services import i18n, monitor, weather
+from app.services import i18n, monitor, notify, weather
 from app.services.memory import memory
 
 logger = logging.getLogger("krishimitra.api")
@@ -215,6 +217,85 @@ async def soil_card(
 
 
 # ---------- notifications ----------
+@router.get("/metrics")
+async def agent_metrics(request: Request) -> dict[str, Any]:
+    """Per-agent latency / failure / token counters.
+
+    Not Clerk-authed: this is for an operator or scraper, not a farmer. Guarded by
+    a shared token instead, and disabled entirely by default - it describes
+    internal AI spend and shouldn't be world-readable.
+
+    Per-worker and in-memory: a health signal, not billing.
+    """
+    if not settings.metrics_enabled:
+        raise HTTPException(404, "Not found")
+    expected = settings.metrics_token
+    supplied = request.headers.get("X-Metrics-Token", "")
+    # compare_digest avoids leaking the token through response timing.
+    if not expected or not hmac.compare_digest(expected, supplied):
+        raise HTTPException(401, "Invalid metrics token")
+    return {"agents": metrics.snapshot()}
+
+
+# ---------- WhatsApp link status ----------
+def _mask_phone(digits: str) -> str:
+    """Show only the last 4 digits - enough to recognise, not enough to leak."""
+    return f"•••••• {digits[-4:]}" if len(digits) >= 4 else "••••••"
+
+
+@router.get("/whatsapp/status")
+async def whatsapp_status(user: str = Depends(get_current_user)) -> dict[str, Any]:
+    """Whether this farm can receive WhatsApp alerts, and why not if it can't.
+
+    Two independent things must both be true: the farm has a phone number, and the
+    server has Twilio credentials. They fail differently and the farmer can only
+    fix the first, so report them separately instead of one opaque boolean.
+    """
+    farm = await memory.get_farm(user)
+    if not farm:
+        raise HTTPException(404, "No farm yet - complete onboarding")
+    phone = (farm.get("phone") or "").strip()
+    return {
+        "linked": bool(phone) and notify.configured(),
+        "has_phone": bool(phone),
+        "provider_configured": notify.configured(),
+        "phone_masked": _mask_phone(phone) if phone else None,
+        "sandbox_join_code": settings.twilio_sandbox_join_code or None,
+    }
+
+
+@router.post(
+    "/whatsapp/test",
+    dependencies=[Depends(user_rate_limit(settings.limit_whatsapp_test, "whatsapp_test"))],
+)
+async def whatsapp_test(user: str = Depends(get_current_user)) -> dict[str, Any]:
+    """Send a test message so the farmer can confirm the link actually works.
+
+    Rate-limited hard: it sends a real (billed) message to a user-supplied number.
+    """
+    farm = await memory.get_farm(user)
+    if not farm:
+        raise HTTPException(404, "No farm yet - complete onboarding")
+    phone = (farm.get("phone") or "").strip()
+    if not phone:
+        raise HTTPException(400, "Add your WhatsApp number to your farm profile first.")
+    if not notify.configured():
+        raise HTTPException(
+            503, "WhatsApp isn't configured on the server yet. Please try again later."
+        )
+
+    ok = await notify.send_test(phone, farm.get("language"))
+    if not ok:
+        # Most common cause on the Twilio sandbox: the number never sent the
+        # `join <code>` message, so Twilio refuses to deliver to it.
+        raise HTTPException(
+            502,
+            "Couldn't deliver the test message. On the Twilio sandbox you must first "
+            "send the join code from your WhatsApp to the sandbox number.",
+        )
+    return {"sent": True, "to": _mask_phone(phone)}
+
+
 @router.get("/notifications")
 async def notifications(user: str = Depends(get_current_user)) -> dict[str, Any]:
     return {

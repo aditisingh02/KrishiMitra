@@ -17,6 +17,7 @@ from app.agents import prompts, safety
 from app.core import guards, languages
 from app.core.config import settings
 from app.core.fireworks import fireworks
+from app.core.observability import tracked
 from app.services import knowledge, market, weather
 from app.services.memory import memory
 
@@ -25,6 +26,7 @@ logger = logging.getLogger("krishimitra.orchestrator")
 VALID_TASKS = {"crop_health", "natural_farming", "weather", "market", "finance", "risk"}
 
 
+@tracked("planner")
 async def plan_tasks(query: str, farm_ctx: str) -> dict[str, Any]:
     user = f"FARM CONTEXT:\n{farm_ctx}\n\nFARMER REQUEST:\n{query}"
     result = await fireworks.chat_json(
@@ -38,12 +40,14 @@ async def plan_tasks(query: str, farm_ctx: str) -> dict[str, Any]:
 
 
 # ---------- individual specialist runners ----------
+@tracked("crop_health")
 async def _run_crop_health(query: str, farm_ctx: str) -> dict[str, Any]:
     kb = knowledge.context_for(query)
     user = f"FARM CONTEXT:\n{farm_ctx}\n\nKNOWLEDGE BASE:\n{kb}\n\nSYMPTOMS / REQUEST:\n{query}"
     return await fireworks.chat_json(prompts.CROP_HEALTH, user, model=settings.model_agent)
 
 
+@tracked("natural_farming")
 async def _run_natural_farming(query: str, farm_ctx: str, diagnosis: dict | None) -> dict[str, Any]:
     kb = knowledge.context_for((diagnosis or {}).get("issue", "") + " " + query)
     diag = json.dumps(diagnosis) if diagnosis else "Not yet diagnosed - infer from symptoms."
@@ -62,6 +66,7 @@ def _crop_names(farm: dict[str, Any]) -> list[str]:
     return [c["name"] if isinstance(c, dict) else c for c in farm.get("crops", [])]
 
 
+@tracked("weather")
 async def _run_weather(query: str, farm: dict[str, Any]) -> dict[str, Any]:
     lat, lon = _coords(farm)
     fc = await weather.get_forecast(lat, lon)
@@ -71,6 +76,7 @@ async def _run_weather(query: str, farm: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+@tracked("market")
 async def _run_market(query: str, farm: dict[str, Any]) -> dict[str, Any]:
     crops = _crop_names(farm)
     prices = await market.get_prices(crops, farm.get("state"))
@@ -80,12 +86,14 @@ async def _run_market(query: str, farm: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+@tracked("finance")
 async def _run_finance(query: str, farm: dict[str, Any]) -> dict[str, Any]:
     kb = knowledge.context_for("PM-KISAN PKVY crop insurance scheme subsidy " + query, k=4)
     user = f"FARM PROFILE:\n{json.dumps(farm)}\n\nSCHEME KNOWLEDGE:\n{kb}\n\nREQUEST:\n{query}"
     return await fireworks.chat_json(prompts.FINANCE, user, model=settings.model_agent)
 
 
+@tracked("risk")
 async def _run_risk(query: str, farm: dict[str, Any], farm_id: str, wx: dict | None) -> dict[str, Any]:
     if wx and wx.get("_forecast"):
         fc = wx["_forecast"]

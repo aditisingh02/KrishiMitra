@@ -6,7 +6,9 @@ import logging
 
 import httpx
 
+from app.core import http
 from app.core.config import settings
+from app.services import i18n
 
 logger = logging.getLogger("krishimitra.notify")
 
@@ -42,10 +44,12 @@ async def send_whatsapp(to_number: str, body: str) -> bool:
         "Body": body[:1500],
     }
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post(
-                url, data=data, auth=(settings.twilio_account_sid, settings.twilio_auth_token)
-            )
+        r = await http.get_client().post(
+            url,
+            data=data,
+            auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+            timeout=20,
+        )
         if r.status_code >= 300:
             logger.warning("Twilio send failed %s: %s", r.status_code, r.text[:200])
             return False
@@ -53,3 +57,46 @@ async def send_whatsapp(to_number: str, body: str) -> bool:
     except httpx.HTTPError as e:
         logger.warning("Twilio send error: %s", e)
         return False
+
+
+# ---- farmer-facing message templates ----
+# Outbound WhatsApp is the one surface where we can't rely on the UI's language
+# switcher: the farmer reads it in their messaging app. Every string a farmer sees
+# gets translated into their language, not just the alert body.
+
+ALERT_HEADER = "KrishiMitra alert for {name}"
+TEST_MESSAGE = (
+    "This is a test message from KrishiMitra. Your WhatsApp is linked correctly - "
+    "you'll get crop alerts here, and you can send a photo or question any time."
+)
+
+
+async def _localize(text: str, lang: str | None) -> str:
+    """Translate a template into the farm's language (English passes through)."""
+    if not lang or lang == "en":
+        return text
+    try:
+        return (await i18n.translate([text], lang)).get(text, text)
+    except Exception as e:  # noqa: BLE001 - never lose the alert to a translation failure
+        logger.warning("alert localization failed (%s): %s", lang, e)
+        return text
+
+
+async def send_alert(phone: str, farmer: str, body: str, lang: str | None) -> bool:
+    """Send a proactive alert, fully localized.
+
+    `body` arrives already translated (the dashboard localizes alert text), but the
+    header wrapping it did not - so an alert would reach a Hindi farmer with an
+    English preamble. Translate the header too.
+
+    Translate the *template*, then interpolate. Formatting the name in first would
+    make every farmer's name part of the i18n cache key - a guaranteed miss, and
+    therefore a fresh LLM call, on every single alert we send.
+    """
+    header = (await _localize(ALERT_HEADER, lang)).replace("{name}", farmer)
+    return await send_whatsapp(phone, f"🌱 {header}:\n\n{body}")
+
+
+async def send_test(phone: str, lang: str | None) -> bool:
+    """Send the 'your WhatsApp is linked' confirmation."""
+    return await send_whatsapp(phone, f"🌱 {await _localize(TEST_MESSAGE, lang)}")

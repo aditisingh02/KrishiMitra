@@ -187,6 +187,32 @@ You need three external services (all have free tiers):
 | `DATA_GOV_API_KEY` | data.gov.in | real mandi prices (Agmarknet); a public sample key is the default |
 | Twilio (optional) | twilio.com | WhatsApp alerts + inbound Q&A |
 
+### Overriding the shared `DATA_GOV_API_KEY`
+
+Mandi prices work out of the box because the app defaults to **data.gov.in's public
+sample key**. That key is shared by every project that uses it and is rate-limited
+across all of them — so under real usage you'll hit 429s and see *"Market data
+unavailable"* or empty prices. That's throttling, not a bug in the app. The backend
+logs a warning at startup whenever the sample key is in use.
+
+Get your own (free, ~2 minutes):
+
+1. Register at [data.gov.in](https://data.gov.in) → confirm your email.
+2. Sign in → profile → **My Account** → copy your API key.
+3. Set it:
+   - **Local:** `DATA_GOV_API_KEY=<your-key>` in `backend/.env`
+   - **Render:** Dashboard → service → **Environment** → *Add Environment Variable*
+   - **Vercel/other:** set it in the backend service's env vars (it's backend-only —
+     never expose it to the browser)
+4. Restart the backend. The startup warning disappears. Verify:
+
+```bash
+curl -H "Authorization: Bearer <clerk-jwt>" localhost:8000/api/market
+```
+
+Prices should return with no `error` field. The key is read once at startup
+(`settings.data_gov_api_key`), so a restart is required.
+
 ## Run it
 
 ### 1. Backend

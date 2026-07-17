@@ -15,7 +15,11 @@ from app.core import http
 from app.core.config import settings
 from app.core.db import dispose_engine
 from app.core.fireworks import fireworks
-from app.services import monitor
+from app.core.observability import init_sentry
+from app.services import market, monitor
+
+# Before the app is constructed, so startup errors are captured too.
+init_sentry()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("krishimitra")
@@ -27,6 +31,15 @@ async def lifespan(app: FastAPI):
     # loop; calls then reuse warm TLS connections instead of handshaking each time.
     await fireworks.startup()
     await http.startup()
+
+    # The bundled data.gov.in key is their shared public sample, rate-limited
+    # across every project using it. Say so at boot, so throttled/empty mandi
+    # prices aren't mistaken for a bug. See .env.example for how to get your own.
+    if settings.data_gov_api_key == market.SAMPLE_KEY:
+        logger.warning(
+            "Using the shared data.gov.in SAMPLE key - mandi prices will be rate-limited. "
+            "Set DATA_GOV_API_KEY to your own key (see backend/.env.example)."
+        )
 
     task: asyncio.Task | None = None
     if settings.monitor_enabled:

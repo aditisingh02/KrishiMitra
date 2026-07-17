@@ -228,28 +228,69 @@ class FireworksClient:
         temperature: float = 0.2,
         max_tokens: int = 4000,
         json_mode: bool = True,
+        retry_on_parse_error: bool = True,
     ) -> dict[str, Any] | str:
-        """Multimodal call: text prompt + one image (data URL or http URL)."""
-        messages: list[dict[str, Any]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append(
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
-            }
-        )
+        """Multimodal call: text prompt + one image (data URL or http URL).
+
+        Gets the same single parse-retry as `chat_json`. It matters more here, not
+        less: the vision model reasons heavily before emitting content, so a
+        truncated reply (`finish_reason=length`) is the likeliest failure - and
+        without a retry the farmer waits through a slow diagnosis only to get
+        nothing back.
+
+        The retry costs a second image upload and prefill, which is why it's
+        capped at one and why we raise the token budget rather than resample at
+        the same settings: repeating an identical call that ran out of room would
+        just run out of room again.
+        """
+        sys_prompt = system
+        if json_mode and sys_prompt:
+            sys_prompt += (
+                "\n\nReply ONLY with a valid JSON object. Fill every field with real "
+                "values - never use placeholders like '...' or 'string'."
+            )
+
+        def build(extra: str = "") -> list[dict[str, Any]]:
+            msgs: list[dict[str, Any]] = []
+            if sys_prompt:
+                msgs.append({"role": "system", "content": sys_prompt + extra})
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
+                }
+            )
+            return msgs
+
         content = await self.chat(
-            messages,
+            build(),
             model=model or settings.model_vision,
             temperature=temperature,
             max_tokens=max_tokens,
             json_mode=json_mode,
         )
-        return _safe_json(content) if json_mode else content
+        if not json_mode:
+            return content
+
+        result = _safe_json(content)
+        if not result.get("_parse_error") or not retry_on_parse_error:
+            return result
+
+        logger.warning("vision JSON parse failed - retrying once (model=%s)", model or settings.model_vision)
+        content = await self.chat(
+            build("\n\nYour previous reply was not valid JSON. Return a single, complete, valid JSON object and nothing else."),
+            model=model or settings.model_vision,
+            temperature=min(temperature, 0.1),
+            max_tokens=int(max_tokens * 1.5),  # the usual cause is truncation
+            json_mode=json_mode,
+        )
+        retried = _safe_json(content)
+        if retried.get("_parse_error"):
+            logger.error("vision JSON parse failed after retry (model=%s)", model or settings.model_vision)
+        return retried
 
 
 def _safe_json(text: str) -> dict[str, Any]:

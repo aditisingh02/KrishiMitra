@@ -33,9 +33,12 @@ logger = logging.getLogger(__name__)
 CACHE_TTL = 60 * 60  # 1 hour
 _cache: dict[tuple[str, str | None], tuple[float, dict[str, Any]]] = {}
 
-# data.gov.in's shared public sample key - works without registration but is
-# aggressively rate-limited (429). If that's all we have, say so clearly.
-_SAMPLE_KEY = "579b464db66ec23bdd000001cdd3946e44ce4aad7209ff7b23ac571b"
+# data.gov.in's public sample key: works without registration, but is shared by
+# every project using it and aggressively rate-limited (429) across all of them.
+# Public (it ships in their docs), not a secret. If that's all we have, say so
+# clearly - both at boot and in the error a farmer would otherwise see.
+# See backend/.env.example for how to get your own.
+SAMPLE_KEY = "579b464db66ec23bdd000001cdd3946e44ce4aad7209ff7b23ac571b"
 
 
 def _require_key() -> str:
@@ -122,7 +125,7 @@ async def get_prices(crops: list[str], state: str | None = None) -> dict[str, An
     out = [item for item in results if item]
 
     if not out:
-        if settings.data_gov_api_key == _SAMPLE_KEY:
+        if settings.data_gov_api_key == SAMPLE_KEY:
             raise ExternalDataError(
                 "Market data unavailable: the shared data.gov.in sample key is rate-limited. "
                 "Set your own free DATA_GOV_API_KEY in backend/.env."
