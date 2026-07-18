@@ -54,6 +54,35 @@ def needs_persisting(result: Any) -> bool:
     )
 
 
+async def persist_interaction_diagnose(result: dict[str, Any], farm_id: str) -> None:
+    """Store a diagnosis in the chat history. Runs after the response.
+
+    Deliberately NOT inside `persist_diagnosis`: that's gated by `needs_persisting`
+    (False for healthy/no-issue scans), and history must capture those too. Own
+    try/except so it can't take down the response path.
+    """
+    try:
+        treatment = result.get("natural_treatment") or {}
+        await memory.add_interaction(
+            farm_id,
+            "diagnose",
+            result.get("_note") or "Photo diagnosis",
+            answer=result.get("explanation_local"),
+            answer_en=treatment.get("remedy"),  # remedy text is English
+            payload={
+                "issue": result.get("issue"),
+                "category": result.get("category"),
+                "severity": result.get("severity"),
+                "confidence": result.get("confidence"),
+                "crop_guess": result.get("crop_guess"),
+                "remedy": treatment.get("remedy"),
+                "recipe": treatment.get("recipe"),
+            },
+        )
+    except Exception:
+        logger.exception("diagnose interaction store failed for farm %s", farm_id)
+
+
 async def persist_diagnosis(result: dict[str, Any], farm_id: str) -> None:
     """Record a diagnosis on the farm twin. Runs AFTER the response is sent.
 
@@ -121,6 +150,8 @@ async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> d
 
     if isinstance(result, dict):
         result["language"] = lang
+        if note:
+            result["_note"] = note  # carried into the history row
         return result
     return {"_raw": result}
 
@@ -394,6 +425,7 @@ async def dashboard(farm_id: str, force: bool = False) -> dict[str, Any]:
             fc = {**fc, "summary": tr.get(fc["summary"], fc["summary"])}
 
     recent_activity = await memory.recent_events(6, farm_id)
+    recent_questions = await memory.recent_interactions(farm_id, 5)
     result = {
         "farm": farm,
         "metrics": {
@@ -409,6 +441,7 @@ async def dashboard(farm_id: str, force: bool = False) -> dict[str, Any]:
         "market": {"items": market_items, "error": market_error},
         "alerts": alerts,
         "recent_activity": recent_activity,
+        "recent_questions": recent_questions,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     _dashboard_cache[farm_id] = (time.time(), result)

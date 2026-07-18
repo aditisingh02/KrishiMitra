@@ -330,13 +330,28 @@ async def diagnose(
 ) -> dict[str, Any]:
     data_url = await read_image_data_url(file)
     diagnosis = await flows.diagnose_image(data_url, farm_id, guards.sanitize(note))
-    # Recording the disease + embedding it into long-term memory costs an extra
-    # network round trip the farmer doesn't need to wait for. Starlette runs this
-    # after the response is flushed. It also invalidates the dashboard cache -
-    # which must happen after the write lands, not before (see persist_diagnosis).
+    # After the response: (1) store every scan in the chat history (incl. healthy
+    # ones - unconditional, unlike persist_diagnosis), (2) record the disease on the
+    # farm twin + embed to memory only when there's a real issue.
+    if isinstance(diagnosis, dict) and not diagnosis.get("_parse_error"):
+        background.add_task(flows.persist_interaction_diagnose, diagnosis, farm_id)
     if flows.needs_persisting(diagnosis):
         background.add_task(flows.persist_diagnosis, diagnosis, farm_id)
     return {"diagnosis": diagnosis}
+
+
+@router.get("/consult/history")
+async def consult_history(
+    limit: int = Query(20, ge=1, le=50), farm_id: str = Depends(get_active_farm)
+) -> dict[str, Any]:
+    return {"items": await memory.list_interactions(farm_id, "consult", limit)}
+
+
+@router.get("/diagnose/history")
+async def diagnose_history(
+    limit: int = Query(20, ge=1, le=50), farm_id: str = Depends(get_active_farm)
+) -> dict[str, Any]:
+    return {"items": await memory.list_interactions(farm_id, "diagnose", limit)}
 
 
 @router.post("/cropping-design")
@@ -688,6 +703,9 @@ async def _diagnose_and_push(
         data_url = f"data:{mime};base64,{base64.b64encode(content).decode()}"
 
         diag = await flows.diagnose_image(data_url, farm_id, note)
+        # Store every scan in history (incl. healthy), same as the web route.
+        if isinstance(diag, dict) and not diag.get("_parse_error"):
+            await flows.persist_interaction_diagnose(diag, farm_id)
         if flows.needs_persisting(diag):
             await flows.persist_diagnosis(diag, farm_id)  # already backgrounded; just await
 

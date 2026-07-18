@@ -128,6 +128,18 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
     if past_blob:
         farm_ctx = f"{farm_ctx}\n\nPAST RELEVANT MEMORY:\n{past_blob}"
 
+    # Recent conversation for continuity ("update later with reference to that").
+    # Capped hard: farm_ctx is reused by the planner + every specialist + synthesis,
+    # so we inject only the last few turns, answers truncated, and skip blocked/empty.
+    recent = await memory.recent_interactions(farm_id, 3)
+    convo = [
+        f"Q: {r['query']}\nA: {(r['answer_en'] or r['answer'] or '')[:240]}"
+        for r in reversed(recent)  # oldest first, reads like a transcript
+        if not r["blocked"] and (r["answer_en"] or r["answer"])
+    ]
+    if convo:
+        farm_ctx = f"{farm_ctx}\n\nRECENT CONVERSATION:\n" + "\n\n".join(convo)
+
     # Farmer text is fenced so agents read it as data, never as instructions.
     fenced = guards.fence(query)
 
@@ -193,10 +205,33 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
         await memory.record_disease(diag["issue"], crop_name, farm_id)
     await memory.add_event("consult", query[:120], {"intent": plan.get("intent")}, farm_id)
 
-    # Store this interaction as recallable long-term memory. Never persist a
-    # blocked or unparseable answer - it would be recalled into future prompts.
     answer = final.get("answer_en") or final.get("answer_local") or ""
-    if answer and not final.get("_parse_error") and not final.get("_blocked"):
+    blocked = bool(final.get("_blocked"))
+
+    # Chat history: store whenever there's usable text OR it was safety-blocked
+    # (the UI shows the blocked answer with a banner). Skip only pure parse errors.
+    if answer or blocked:
+        await memory.add_interaction(
+            farm_id,
+            "consult",
+            query,
+            answer=final.get("answer_local") or answer,
+            answer_en=final.get("answer_en"),
+            payload={
+                "intent": plan.get("intent"),
+                "agents_run": list(outputs.keys()),
+                "confidence": final.get("confidence"),
+                "action_plan": final.get("action_plan") or [],
+            },
+            blocked=blocked,
+        )
+        # A new consult changes the dashboard's "recent questions" card.
+        from app.agents.flows import invalidate_dashboard
+        invalidate_dashboard(farm_id)
+
+    # Also store as recallable long-term memory. Never persist a blocked or
+    # unparseable answer here - it would be recalled into future prompts.
+    if answer and not final.get("_parse_error") and not blocked:
         await memory.add_memory(
             farm_id,
             "consult",

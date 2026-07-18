@@ -1,5 +1,5 @@
 "use client";
-import { api, ApiError, type ConsultResult } from "@/lib/api";
+import { api, ApiError, type ConsultResult, type Interaction } from "@/lib/api";
 import { Tag, Button, Card } from "@/components/ui/primitives";
 import { TextGenerate } from "@/components/ui/text-generate";
 import { motion, AnimatePresence } from "framer-motion";
@@ -15,6 +15,8 @@ import {
   Bank,
   ShieldWarning,
   CircleNotch,
+  ClockCounterClockwise,
+  CaretDown,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-runtime";
@@ -41,12 +43,26 @@ function answerText(res: ConsultResult, lang: "en" | "local"): string | undefine
   return text?.trim() ? text : undefined;
 }
 
-const SUGGESTIONS = [
-  "My tomato leaves have white spots - should I spray neem tomorrow?",
-  "Mere tamatar ke patte peele ho rahe hain, kya karu?",
-  "Should I sell my tomatoes now or wait?",
+// Recommended questions built from the farm's ACTUAL crop, not a hardcoded one.
+// `{crop}` is filled with the active farm's first crop; falls back to a generic
+// set when the farm has no crops yet.
+const CROP_TEMPLATES = [
+  "My {crop} leaves have spots - should I spray neem tomorrow?",
+  "Should I sell my {crop} now or wait?",
+  "What natural fertilizer is best for {crop} right now?",
+];
+const GENERIC_SUGGESTIONS = [
+  "My crop leaves have white spots - what should I do?",
+  "Should I sell my harvest now or wait?",
   "What government schemes can I apply for?",
 ];
+
+function buildSuggestions(crop: string | null): string[] {
+  const base = crop
+    ? CROP_TEMPLATES.map((s) => s.replace("{crop}", crop))
+    : GENERIC_SUGGESTIONS;
+  return [...base, "What government schemes can I apply for?"].slice(0, 4);
+}
 
 export default function ConsultPage() {
   const t = useT();
@@ -56,7 +72,22 @@ export default function ConsultPage() {
   const [error, setError] = useState<string | null>(null);
   const [lang, setLang] = useState<"en" | "local">("local");
   const [listening, setListening] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>(() => buildSuggestions(null));
+  const [history, setHistory] = useState<Interaction[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
   const recognitionRef = useRef<any>(null);
+
+  // Recommended questions use the active farm's real crop; history is the stored
+  // conversation for that farm.
+  useEffect(() => {
+    api.farm()
+      .then(({ farm }) => {
+        const crop = farm.crops?.[0]?.name ?? null;
+        setSuggestions(buildSuggestions(crop));
+      })
+      .catch(() => {});
+    api.consultHistory().then(({ items }) => setHistory(items)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const SR = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
@@ -103,6 +134,20 @@ export default function ConsultPage() {
     try {
       const res = await api.consult(text);
       setResult(res);
+      // Prepend to the local history so it shows immediately (server already stored it).
+      setHistory((h) => [
+        {
+          id: Date.now(),
+          kind: "consult",
+          query: res.query || text,
+          answer: res.result.answer_local ?? null,
+          answer_en: res.result.answer_en ?? null,
+          payload: { action_plan: res.result.action_plan ?? [] },
+          blocked: !!res.result._blocked,
+          created_at: new Date().toISOString(),
+        },
+        ...h,
+      ]);
       const spoken = res.result.answer_local || res.result.answer_en;
       if (spoken) speak(spoken, res.language?.tts || sttLocale());
     } catch (e) {
@@ -168,7 +213,7 @@ export default function ConsultPage() {
 
       {!result && !loading && (
         <div className="flex flex-wrap gap-2">
-          {SUGGESTIONS.map((s) => (
+          {suggestions.map((s) => (
             <button
               key={s}
               onClick={() => submit(s)}
@@ -302,6 +347,52 @@ export default function ConsultPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Past questions - stored per farm, survives reload. Collapsed by default. */}
+      {history.length > 0 && (
+        <div className="pt-1">
+          <button
+            onClick={() => setShowHistory((v) => !v)}
+            className="flex w-full items-center justify-between rounded-md px-1 py-2 text-sm text-muted transition-colors hover:text-charcoal"
+          >
+            <span className="flex items-center gap-2">
+              <ClockCounterClockwise className="h-4 w-4" />
+              {t("Past questions")} ({history.length})
+            </span>
+            <CaretDown className={`h-4 w-4 transition-transform ${showHistory ? "rotate-180" : ""}`} />
+          </button>
+
+          {showHistory && (
+            <div className="mt-2 space-y-2">
+              {history.map((h) => {
+                const ans = (lang === "en" ? h.answer_en || h.answer : h.answer || h.answer_en) || "";
+                return (
+                  <Card key={h.id} interactive={false} className="!p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-medium text-ink">{h.query}</p>
+                      <span className="shrink-0 font-mono text-[11px] text-faint">
+                        {new Date(h.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    {h.blocked ? (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-sm text-pale-yellowink">
+                        <ShieldWarning className="h-3.5 w-3.5" /> {t("Answer was held back for safety.")}
+                      </p>
+                    ) : (
+                      ans && <p className="mt-1.5 whitespace-pre-line text-sm leading-relaxed text-muted">{ans}</p>
+                    )}
+                    {(h.payload?.action_plan?.length ?? 0) > 0 && (
+                      <p className="mt-1.5 text-xs text-faint">
+                        {h.payload.action_plan.length} {t("action steps")}
+                      </p>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

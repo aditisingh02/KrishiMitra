@@ -40,6 +40,19 @@ def _profile_dict(p: "Profile") -> dict[str, Any]:
     }
 
 
+def _interaction_dict(r: "Interaction") -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "kind": r.kind,
+        "query": r.query,
+        "answer": r.answer,
+        "answer_en": r.answer_en,
+        "payload": r.payload or {},
+        "blocked": bool(r.blocked),
+        "created_at": r.created_at,
+    }
+
+
 def _task_dict(t: "CalendarTask") -> dict[str, Any]:
     return {
         "id": t.id,
@@ -168,6 +181,31 @@ class CalendarTask(Base):
     done: Mapped[int] = mapped_column(Integer, default=0)
     notified_on: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, default=_now)
+
+
+class Interaction(Base):
+    """Full chat history: one row per consult / diagnose, per farm.
+
+    Distinct from `events` (short activity summaries that feed prompts + the
+    dashboard) and `memories` (pgvector semantic recall that embeds every row and
+    excludes blocked answers). This is the displayable, paginated conversation
+    history - no embedding cost, and it keeps blocked answers so the UI can show
+    the same safety banner.
+    """
+
+    __tablename__ = "interactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    farm_id: Mapped[str] = mapped_column(String, index=True)
+    kind: Mapped[str] = mapped_column(String)  # consult | diagnose
+    query: Mapped[str] = mapped_column(Text)  # question / photo note
+    answer: Mapped[str | None] = mapped_column(Text)  # local answer, for display
+    answer_en: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    blocked: Mapped[int] = mapped_column(Integer, default=0)  # safety guardrail withheld it
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+    __table_args__ = (Index("ix_interactions_farm_kind", "farm_id", "kind"),)
 
 
 class Memory(Base):
@@ -345,7 +383,7 @@ class FarmMemory:
             if not row or row.profile_id != user_id:
                 return False
             # Remove the farm's dependent rows so nothing dangles.
-            for model in (Event, Notification, CropCycle, CalendarTask, Memory):
+            for model in (Event, Notification, CropCycle, CalendarTask, Memory, Interaction):
                 await s.execute(delete(model).where(model.farm_id == farm_id))
             await s.delete(row)
             # If this was the active farm, fall back to another of the profile's farms.
@@ -522,6 +560,48 @@ class FarmMemory:
             {"kind": r.kind, "text": r.text, "meta": r.meta or {}, "created_at": r.created_at}
             for r in rows
         ]
+
+    # ---------- interactions (chat history: consult / diagnose) ----------
+    async def add_interaction(
+        self,
+        farm_id: str,
+        kind: str,
+        query: str,
+        answer: str | None,
+        answer_en: str | None,
+        payload: dict[str, Any] | None = None,
+        blocked: bool = False,
+    ) -> int:
+        async with SessionLocal() as s:
+            row = Interaction(
+                farm_id=farm_id,
+                kind=kind,
+                query=(query or "")[:2000],
+                answer=answer,
+                answer_en=answer_en,
+                payload=payload or {},
+                blocked=1 if blocked else 0,
+                created_at=_now(),
+            )
+            s.add(row)
+            await s.commit()
+            return row.id
+
+    async def list_interactions(
+        self, farm_id: str, kind: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """History newest-first. Ordered by id (monotonic, index-backed)."""
+        async with SessionLocal() as s:
+            q = select(Interaction).where(Interaction.farm_id == farm_id)
+            if kind is not None:
+                q = q.where(Interaction.kind == kind)
+            rows = (
+                await s.execute(q.order_by(Interaction.id.desc()).limit(max(1, min(limit, 100))))
+            ).scalars().all()
+            return [_interaction_dict(r) for r in rows]
+
+    async def recent_interactions(self, farm_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        return await self.list_interactions(farm_id, limit=limit)
 
     # ---------- compact context for prompts ----------
     # ---------- crop calendar ----------

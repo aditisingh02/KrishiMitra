@@ -1,5 +1,5 @@
 "use client";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, type Interaction } from "@/lib/api";
 import { downscaleImage } from "@/lib/image";
 import { Tag, Button, Card } from "@/components/ui/primitives";
 import { motion, AnimatePresence } from "framer-motion";
@@ -12,6 +12,7 @@ import {
   Warning,
   CheckCircle,
   X,
+  ClockCounterClockwise,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-runtime";
@@ -28,9 +29,15 @@ export default function DiagnosePage() {
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [history, setHistory] = useState<Interaction[]>([]);
   const [drag, setDrag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const previewUrl = useRef<string | null>(null);
+
+  // Past diagnoses for the active farm (result only - no image is stored).
+  useEffect(() => {
+    api.diagnoseHistory().then(({ items }) => setHistory(items)).catch(() => {});
+  }, []);
 
   function setPreviewUrl(url: string | null) {
     // Object URLs pin the blob in memory until revoked - always release the old one.
@@ -70,6 +77,26 @@ export default function DiagnosePage() {
     try {
       const res = await api.diagnose(file, note);
       setResult(res.diagnosis);
+      const d = res.diagnosis;
+      if (d && !d._parse_error) {
+        const tr = d.natural_treatment || {};
+        setHistory((h) => [
+          {
+            id: Date.now(),
+            kind: "diagnose",
+            query: note || "Photo diagnosis",
+            answer: d.explanation_local ?? null,
+            answer_en: tr.remedy ?? null,
+            payload: {
+              issue: d.issue, category: d.category, severity: d.severity,
+              confidence: d.confidence, crop_guess: d.crop_guess, remedy: tr.remedy,
+            },
+            blocked: false,
+            created_at: new Date().toISOString(),
+          },
+          ...h,
+        ]);
+      }
       if (res.diagnosis?.explanation_local) {
         const u = new SpeechSynthesisUtterance(res.diagnosis.explanation_local);
         u.lang = res.diagnosis.language?.tts || `${getStoredLang() || "hi"}-IN`;
@@ -273,6 +300,42 @@ export default function DiagnosePage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Past diagnoses - stored per farm (result only, no image). */}
+      {history.length > 0 && (
+        <div className="pt-1">
+          <div className="mb-2 flex items-center gap-2 px-1 text-sm text-muted">
+            <ClockCounterClockwise className="h-4 w-4" />
+            {t("Past diagnoses")} ({history.length})
+          </div>
+          <div className="space-y-2">
+            {history.map((h) => (
+              <Card key={h.id} interactive={false} className="!p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-ink">
+                      {h.payload?.issue ? t(h.payload.issue) : t("Analysis")}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[11px] text-muted">
+                      {h.payload?.crop_guess ? `${t(h.payload.crop_guess)} · ` : ""}
+                      {h.payload?.category ? t(h.payload.category) : ""}
+                      {h.payload?.severity ? ` · ${t(h.payload.severity)}` : ""}
+                    </p>
+                  </div>
+                  <span className="shrink-0 font-mono text-[11px] text-faint">
+                    {new Date(h.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                {(h.answer || h.answer_en) && (
+                  <p className="mt-1.5 whitespace-pre-line text-sm leading-relaxed text-muted">
+                    {h.answer || h.answer_en}
+                  </p>
+                )}
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

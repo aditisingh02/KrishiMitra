@@ -33,6 +33,18 @@ export type Profile = {
 
 export type Alert = { level: "ok" | "info" | "warning" | "danger"; icon: string; text: string };
 
+/** A stored consult/diagnose turn (chat history). */
+export type Interaction = {
+  id: number;
+  kind: "consult" | "diagnose";
+  query: string;
+  answer: string | null;
+  answer_en: string | null;
+  payload: Record<string, any>;
+  blocked: boolean;
+  created_at: string;
+};
+
 export type Dashboard = {
   farm: Farm;
   metrics: {
@@ -48,6 +60,7 @@ export type Dashboard = {
   market: { items: MarketItem[]; error?: string | null };
   alerts: Alert[];
   recent_activity: { kind: string; summary: string; created_at: string }[];
+  recent_questions: Interaction[];
   generated_at?: string;
 };
 
@@ -236,6 +249,8 @@ export const api = {
   farm: () => jget<{ farm: Farm; recent_activity: any[] }>("/api/farm"),
   languages: () => jget<{ languages: Record<string, LangInfo> }>("/api/languages"),
   consult: (query: string) => jpost<ConsultResult>("/api/consult", { query }),
+  consultHistory: (limit = 20) => jget<{ items: Interaction[] }>(`/api/consult/history?limit=${limit}`),
+  diagnoseHistory: (limit = 20) => jget<{ items: Interaction[] }>(`/api/diagnose/history?limit=${limit}`),
   weeklyPlan: (focus = "") => jpost<{ plan: any }>("/api/weekly-plan", { focus }),
   croppingDesign: (land: string, location: string, goals: string) =>
     jpost<{ design: any }>("/api/cropping-design", { land, location, goals }),

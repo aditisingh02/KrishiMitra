@@ -53,7 +53,7 @@ export default function DashboardPage() {
   if (error) return <ErrorState error={error} />;
   if (!data) return <DashboardSkeleton />;
 
-  const { metrics, weather, market, alerts, risk, recent_activity, farm } = data;
+  const { metrics, weather, market, alerts, risk, recent_activity, recent_questions, farm } = data;
   const today = weather.days?.[0];
 
   return (
@@ -207,7 +207,9 @@ export default function DashboardPage() {
         <Card className="lg:col-span-5" interactive={false}>
           <Head label={t("Farm activity")} note={t("Recent memory")} inline />
           <ol className="relative mt-4 space-y-4 border-l border-line pl-4">
-            {recent_activity.slice(0, 5).map((ev, i) => (
+            {/* Hide consult rows here - they get their own "Recent questions" card
+                below (events log a consult summary, so this would double-display). */}
+            {recent_activity.filter((ev) => ev.kind !== "consult").slice(0, 5).map((ev, i) => (
               <li key={i} className="relative">
                 <span className="absolute -left-[21px] top-1 h-2 w-2 rounded-full bg-field-600 ring-4 ring-paper" />
                 <p className="text-sm text-charcoal">{t(ev.summary)}</p>
@@ -217,6 +219,35 @@ export default function DashboardPage() {
           </ol>
         </Card>
       </div>
+
+      {/* Recent questions - stored consult/diagnose history for this farm. */}
+      {recent_questions?.length > 0 && (
+        <Card interactive={false}>
+          <Head label={t("Recent questions")} note={t("Your saved consults & diagnoses")} inline />
+          <div className="mt-4 space-y-3">
+            {recent_questions.slice(0, 5).map((q) => {
+              const ans = q.answer || q.answer_en || "";
+              return (
+                <div key={q.id} className="border-b border-line pb-3 last:border-0 last:pb-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-medium text-ink">
+                      {q.kind === "diagnose" && q.payload?.issue ? t(q.payload.issue) : q.query}
+                    </p>
+                    <span className="shrink-0 font-mono text-[11px] text-faint">
+                      {t(q.kind)} · {new Date(q.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {q.blocked ? (
+                    <p className="mt-0.5 text-sm text-pale-yellowink">{t("Held back for safety.")}</p>
+                  ) : (
+                    ans && <p className="mt-0.5 line-clamp-2 text-sm text-muted">{ans}</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
