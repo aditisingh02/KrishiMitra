@@ -8,6 +8,8 @@ import {
   CalendarBlank,
   CalendarCheck,
   TrendUp,
+  UserCircle,
+  Plant,
 } from "@phosphor-icons/react";
 import { UserButton } from "@clerk/nextjs";
 import { NotificationBell } from "@/components/shell/notifications";
@@ -15,26 +17,49 @@ import { AppLanguageSelect } from "@/components/shell/app-language-select";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, type Farm } from "@/lib/api";
+import { api, type Farm, type Profile } from "@/lib/api";
 import { useT } from "@/lib/i18n-runtime";
 
+// Ordered by what a farmer reaches for day to day; Dashboard sits last because
+// it's the overview you land on rather than something you navigate to.
+// (It stays the post-sign-in destination - see sign-in/page.tsx and onboarding.)
 const NAV = [
-  { href: "/dashboard", label: "Dashboard", icon: SquaresFour },
   { href: "/consult", label: "Consult", icon: Microphone },
   { href: "/diagnose", label: "Diagnose", icon: Scan },
   { href: "/calendar", label: "Calendar", icon: CalendarCheck },
   { href: "/planner", label: "Planner", icon: CalendarBlank },
   { href: "/market", label: "Market", icon: TrendUp },
+  { href: "/profile", label: "Profile", icon: UserCircle },
+  { href: "/dashboard", label: "Dashboard", icon: SquaresFour },
 ];
 
 export function Sidebar() {
   const t = useT();
   const path = usePathname();
-  const [farm, setFarm] = useState<Farm | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [farms, setFarms] = useState<Farm[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   useEffect(() => {
-    api.farm().then((d) => setFarm(d.farm)).catch(() => {});
+    api.profile().then((d) => {
+      setProfile(d.profile);
+      setFarms(d.farms);
+      setActiveId(d.profile.active_farm_id ?? null);
+    }).catch(() => {});
   }, []);
+
+  const activeFarm = farms.find((f) => f.id === activeId) ?? null;
+
+  async function switchFarm(id: string) {
+    if (id === activeId) return;
+    try {
+      await api.setActiveFarm(id);
+      // The app is scoped to the active farm - reload so every page follows.
+      window.location.reload();
+    } catch {
+      /* leave the selection as-is on failure */
+    }
+  }
 
   return (
     <aside className="sticky top-0 z-40 hidden h-screen w-[240px] shrink-0 flex-col border-r border-line bg-paper px-4 py-7 lg:flex">
@@ -76,18 +101,43 @@ export function Sidebar() {
 
       <div className="mt-auto space-y-3">
         <AppLanguageSelect className="w-full justify-between" />
+
+        {/* Active farm + switcher. The farm name is the heading; the whole card
+            is a picker when the farmer has more than one farm. */}
         <div className="rounded-lg border border-line bg-surface p-4">
-          <p className="overline mb-1.5">{t("Active twin")}</p>
-          <p className="text-sm font-medium text-ink">{farm?.farmer ?? t("Your farm")}</p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-ink">
+              {activeFarm?.name ?? activeFarm?.location ?? t("Your farm")}
+            </p>
+            <Plant className="h-4 w-4 text-field-600" weight="fill" />
+          </div>
           <p className="mt-0.5 text-xs text-muted">
-            {farm
-              ? `${farm.location} · ${farm.farm_size_acres} ${t("acres")} · ${t(farm.farming_type)}`
+            {activeFarm
+              ? `${activeFarm.location} · ${activeFarm.farm_size_acres} ${t("acres")}`
               : t("Loading…")}
           </p>
+          {farms.length > 1 && (
+            <select
+              value={activeId ?? ""}
+              onChange={(e) => switchFarm(e.target.value)}
+              className="mt-2.5 w-full rounded-md border border-line bg-bone px-2 py-1.5 text-xs text-charcoal focus:outline-none"
+              aria-label={t("Switch farm")}
+            >
+              {farms.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name ?? f.location}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
+
+        {/* The farmer, not "Account". */}
         <div className="flex items-center gap-2 px-1">
           <UserButton afterSignOutUrl="/" />
-          <span className="flex-1 text-xs text-muted">{t("Account")}</span>
+          <Link href="/profile" className="flex-1 truncate text-xs font-medium text-charcoal hover:text-ink">
+            {profile?.name ?? t("Account")}
+          </Link>
           <NotificationBell />
         </div>
       </div>

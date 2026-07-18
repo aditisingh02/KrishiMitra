@@ -87,9 +87,9 @@ export default function Landing() {
     setStoredLang(code);
     if (isSignedIn) {
       try {
-        await api.updateFarm({ language: code });
+        await api.updateProfile({ language: code });
       } catch {
-        /* no farm yet - choice is remembered for onboarding */
+        /* no profile yet - choice is remembered for onboarding */
       }
     }
   }

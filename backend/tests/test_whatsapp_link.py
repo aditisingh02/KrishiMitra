@@ -26,55 +26,9 @@ def test_test_send_requires_auth(client):
     assert client.post("/api/whatsapp/test").status_code == 401
 
 
-# ---------- localization (item 9) ----------
-@pytest.mark.asyncio
-async def test_alert_header_is_localized(monkeypatch):
-    sent: dict = {}
-
-    async def fake_translate(strings, lang):
-        # Simulate the translator preserving the {name} placeholder, as its
-        # system prompt requires.
-        return {s: s.replace("KrishiMitra alert for", "कृषिमित्र चेतावनी") for s in strings}
-
-    async def fake_send(to, body):
-        sent["to"], sent["body"] = to, body
-        return True
-
-    monkeypatch.setattr(notify.i18n, "translate", fake_translate)
-    monkeypatch.setattr(notify, "send_whatsapp", fake_send)
-
-    await notify.send_alert("9876543210", "Ramesh", "बारिश आ रही है", "hi")
-    assert "कृषिमित्र चेतावनी" in sent["body"]
-    assert "Ramesh" in sent["body"]
-    assert "बारिश आ रही है" in sent["body"]
-
-
-@pytest.mark.asyncio
-async def test_template_is_translated_before_name_interpolation(monkeypatch):
-    """Cost guard.
-
-    Translating "KrishiMitra alert for Ramesh" would make every farmer's name part
-    of the i18n cache key - a guaranteed cache miss and a fresh LLM call on every
-    alert. The template must go to the translator with {name} still in it.
-    """
-    seen: list[list[str]] = []
-
-    async def fake_translate(strings, lang):
-        seen.append(list(strings))
-        return {s: s for s in strings}
-
-    async def fake_send(to, body):
-        return True
-
-    monkeypatch.setattr(notify.i18n, "translate", fake_translate)
-    monkeypatch.setattr(notify, "send_whatsapp", fake_send)
-
-    await notify.send_alert("9876543210", "Ramesh", "body", "hi")
-    assert seen, "translator was never called"
-    assert any("{name}" in s for s in seen[0]), "name was interpolated before translation"
-    assert not any("Ramesh" in s for s in seen[0])
-
-
+# ---------- localization ----------
+# WhatsApp is inbound-only now (no proactive alerts). The one outbound string
+# that still exists - the link-test confirmation - is localized.
 @pytest.mark.asyncio
 async def test_english_skips_translation(monkeypatch):
     called = []
@@ -89,13 +43,13 @@ async def test_english_skips_translation(monkeypatch):
     monkeypatch.setattr(notify.i18n, "translate", fake_translate)
     monkeypatch.setattr(notify, "send_whatsapp", fake_send)
 
-    await notify.send_alert("9876543210", "Ramesh", "body", "en")
+    await notify.send_test("9876543210", "en")
     assert not called, "English must not hit the translator"
 
 
 @pytest.mark.asyncio
-async def test_translation_failure_still_sends_the_alert(monkeypatch):
-    """An alert is time-sensitive - never lose it to a translation error."""
+async def test_test_message_survives_translation_failure(monkeypatch):
+    """Never lose the message to a translation error - fall back to English."""
     sent = {}
 
     async def boom(strings, lang):
@@ -108,9 +62,16 @@ async def test_translation_failure_still_sends_the_alert(monkeypatch):
     monkeypatch.setattr(notify.i18n, "translate", boom)
     monkeypatch.setattr(notify, "send_whatsapp", fake_send)
 
-    ok = await notify.send_alert("9876543210", "Ramesh", "rain coming", "hi")
+    ok = await notify.send_test("9876543210", "hi")
     assert ok
-    assert "rain coming" in sent["body"]  # fell back to English, still delivered
+    assert "linked correctly" in sent["body"]  # English fallback, still delivered
+
+
+@pytest.mark.asyncio
+async def test_no_proactive_alert_sender_exists():
+    """Guard against the alert push being reintroduced by accident."""
+    assert not hasattr(notify, "send_alert")
+    assert not hasattr(notify, "localize_task")
 
 
 @pytest.mark.asyncio

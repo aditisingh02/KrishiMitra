@@ -6,23 +6,23 @@ import { CircleNotch } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 
 /**
- * Self-contained language switch for the app. Reads the farm's current language,
- * and on change updates the farm (so the agents + voice respond in it) and
- * reloads so every page picks up the new language.
+ * Self-contained language switch. Language is profile-level (one setting for the
+ * farmer, applied to all their farms), so it reads/writes the profile and reloads
+ * so every page picks up the new language.
  */
 export function AppLanguageSelect({ className }: { className?: string }) {
   const [lang, setLang] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.farm().then((d) => setLang(d.farm.language || "hi")).catch(() => setLang("hi"));
+    api.profile().then((d) => setLang(d.profile.language || "hi")).catch(() => setLang("hi"));
   }, []);
 
   async function change(code: string) {
     setSaving(true);
     setStoredLang(code);
     try {
-      await api.updateFarm({ language: code });
+      await api.updateProfile({ language: code });
       window.location.reload();
     } catch {
       setLang(code);

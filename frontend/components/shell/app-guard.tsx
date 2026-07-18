@@ -26,9 +26,11 @@ export function AppGuard({ children }: { children: React.ReactNode }) {
       try {
         // ensure Clerk token is warm before the api helper reads it
         await getToken();
-        const { exists } = await api.farmExists();
+        // Onboarding is complete only once there's a profile AND at least one
+        // farm. The onboarding page itself resumes at whichever step is missing.
+        const { profile, farms } = await api.profileExists();
         if (!active) return;
-        if (!exists) router.replace("/onboarding");
+        if (!profile || farms === 0) router.replace("/onboarding");
         else setReady(true);
       } catch {
         if (active) setReady(true); // let the page show its own error state

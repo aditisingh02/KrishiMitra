@@ -5,8 +5,10 @@ export type Crop = { name: string; stage?: string; sown?: string; area_acres?: n
 
 export type Farm = {
   id: string;
-  farmer: string;
-  language: string;
+  profile_id?: string;
+  name?: string;
+  farmer?: string; // denormalized from the profile
+  language?: string; // denormalized from the profile
   location: string;
   phone?: string;
   lat?: number;
@@ -17,6 +19,16 @@ export type Farm = {
   soil: Record<string, any>;
   recent_diseases: { disease: string; crop: string; date: string }[];
   inputs_on_hand?: string[];
+};
+
+/** The farmer. Owns many farms; the AI runs on `active_farm_id`. */
+export type Profile = {
+  id: string;
+  name: string;
+  phone?: string | null;
+  language?: string | null;
+  default_location?: string | null;
+  active_farm_id?: string | null;
 };
 
 export type Alert = { level: "ok" | "info" | "warning" | "danger"; icon: string; text: string };
@@ -161,17 +173,36 @@ async function jpost<T>(path: string, body: unknown, method = "POST"): Promise<T
   return r.json();
 }
 
-export type FarmInput = {
-  farmer: string;
+/** Onboarding step 1: the farmer. `location` seeds the first farm. */
+export type ProfileInput = {
+  name: string;
   location: string;
   phone?: string;
+  language: string;
+};
+
+/** Partial profile update. `phone: ""` explicitly unlinks WhatsApp. */
+export type ProfilePatch = {
+  name?: string;
+  phone?: string;
+  language?: string;
+  default_location?: string;
+};
+
+/** A farm (onboarding step 2 / "add farm"). Identity comes from the profile. */
+export type FarmInput = {
+  name: string;
+  location: string;
+  state?: string;
   farm_size_acres: number;
   farming_type: string;
-  language: string;
   crops: { name: string; stage?: string; area_acres?: number }[];
   soil: Record<string, any>;
   inputs_on_hand: string[];
 };
+
+/** Partial farm update - farm-level fields only (no identity). */
+export type FarmPatch = Partial<Omit<FarmInput, "state">>;
 
 async function upload<T>(path: string, file: File, fields: Record<string, string> = {}): Promise<T> {
   const fd = new FormData();
@@ -183,11 +214,25 @@ async function upload<T>(path: string, file: File, fields: Record<string, string
 }
 
 export const api = {
-  farmExists: () => jget<{ exists: boolean }>("/api/farm/exists"),
-  createFarm: (farm: FarmInput) => jpost<{ farm: Farm }>("/api/farm", farm),
-  updateFarm: (patch: Record<string, any>) => jpost<{ farm: Farm }>("/api/farm", patch, "PATCH"),
+  // profile (the farmer)
+  profileExists: () =>
+    jget<{ profile: boolean; farms: number; active_farm_id: string | null }>("/api/profile/exists"),
+  profile: () => jget<{ profile: Profile; farms: Farm[] }>("/api/profile"),
+  createProfile: (p: ProfileInput) => jpost<{ profile: Profile }>("/api/profile", p),
+  updateProfile: (patch: ProfilePatch) => jpost<{ profile: Profile }>("/api/profile", patch, "PATCH"),
+  setActiveFarm: (farm_id: string) =>
+    jpost<{ active_farm_id: string }>("/api/profile/active-farm", { farm_id }),
+
+  // farms (a profile owns many)
+  farms: () => jget<{ farms: Farm[]; active_farm_id: string | null }>("/api/farms"),
+  createFarm: (farm: FarmInput) => jpost<{ farm: Farm }>("/api/farms", farm),
+  updateFarm: (farmId: string, patch: FarmPatch) =>
+    jpost<{ farm: Farm }>(`/api/farms/${farmId}`, patch, "PATCH"),
+  deleteFarm: (farmId: string) => jpost<{ ok: boolean }>(`/api/farms/${farmId}`, {}, "DELETE"),
+
   dashboard: (refresh = false) =>
     jget<Dashboard>(`/api/dashboard${refresh ? "?refresh=1" : ""}`),
+  /** The currently-active farm. */
   farm: () => jget<{ farm: Farm; recent_activity: any[] }>("/api/farm"),
   languages: () => jget<{ languages: Record<string, LangInfo> }>("/api/languages"),
   consult: (query: string) => jpost<ConsultResult>("/api/consult", { query }),

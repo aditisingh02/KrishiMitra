@@ -175,41 +175,38 @@ def _task(i: int, due: date, **kw):
 
 @pytest.fixture
 def _rem(monkeypatch):
-    sent: list = []
+    """Capture in-app notifications + which tasks got stamped notified.
+
+    Calendar reminders are IN-APP only now (no WhatsApp push), so we assert on
+    add_notification, not on any outbound send.
+    """
+    notes: list = []
     notified: list = []
 
-    async def localize_task(task, lang):
-        return task["title"]
-
-    async def send_alert(phone, farmer, body, lang):
-        sent.append(body)
-        return True
-
     async def add_notification(farm_id, level, title, body):
+        notes.append((title, body))
         return 1
 
     async def mark_notified(task_id, on_date):
         notified.append(task_id)
 
-    monkeypatch.setattr(monitor.notify, "localize_task", localize_task)
-    monkeypatch.setattr(monitor.notify, "send_alert", send_alert)
     monkeypatch.setattr(monitor.memory, "add_notification", add_notification)
     monkeypatch.setattr(monitor.memory, "mark_task_notified", mark_notified)
-    return sent, notified
+    return notes, notified
 
 
 @pytest.mark.asyncio
-async def test_due_tasks_are_reminded_and_marked(monkeypatch, _rem):
-    sent, notified = _rem
+async def test_due_tasks_raise_in_app_notification_and_mark(monkeypatch, _rem):
+    notes, notified = _rem
     soon = date.today() + timedelta(days=1)
 
     async def due_tasks(farm_id, horizon):
         return [_task(1, soon)]
 
     monkeypatch.setattr(monitor.memory, "due_tasks", due_tasks)
-    n = await monitor.check_calendar({"id": "f1", "phone": "9876543210", "farmer": "R"})
+    n = await monitor.check_calendar({"id": "f1", "farmer": "R"})
     assert n == 1
-    assert sent == ["Task 1"]
+    assert notes == [("Task 1", "Task 1")]  # no detail -> title as body
     assert notified == [1], "task must be stamped so it isn't reminded again tomorrow"
 
 
@@ -230,50 +227,17 @@ async def test_reminder_uses_lead_time_horizon(monkeypatch, _rem):
 
 @pytest.mark.asyncio
 async def test_reminders_are_capped_per_cycle(monkeypatch, _rem):
-    """A backlog must not become a wall of WhatsApp messages."""
-    sent, _ = _rem
-    soon = date.today()
+    """A backlog must not become a wall of notifications."""
+    notes, _ = _rem
 
     async def due_tasks(farm_id, horizon):
-        return [_task(i, soon) for i in range(20)]
+        return [_task(i, date.today()) for i in range(20)]
 
     monkeypatch.setattr(monitor.settings, "calendar_reminders_per_cycle", 3)
     monkeypatch.setattr(monitor.memory, "due_tasks", due_tasks)
-    n = await monitor.check_calendar({"id": "f1", "phone": "9876543210"})
+    n = await monitor.check_calendar({"id": "f1"})
     assert n == 3
-    assert len(sent) == 3
-
-
-@pytest.mark.asyncio
-async def test_failed_send_is_not_marked_notified(monkeypatch, _rem):
-    """Don't swallow a reminder: leave it un-stamped so the next cycle retries."""
-    _, notified = _rem
-
-    async def due_tasks(farm_id, horizon):
-        return [_task(1, date.today())]
-
-    async def failing_send(phone, farmer, body, lang):
-        return False
-
-    monkeypatch.setattr(monitor.memory, "due_tasks", due_tasks)
-    monkeypatch.setattr(monitor.notify, "send_alert", failing_send)
-    n = await monitor.check_calendar({"id": "f1", "phone": "9876543210"})
-    assert n == 0
-    assert notified == []
-
-
-@pytest.mark.asyncio
-async def test_farm_without_phone_still_gets_in_app_notification(monkeypatch, _rem):
-    sent, notified = _rem
-
-    async def due_tasks(farm_id, horizon):
-        return [_task(1, date.today())]
-
-    monkeypatch.setattr(monitor.memory, "due_tasks", due_tasks)
-    n = await monitor.check_calendar({"id": "f1"})  # no phone
-    assert n == 1
-    assert sent == []          # no WhatsApp
-    assert notified == [1]     # but recorded in-app
+    assert len(notes) == 3
 
 
 @pytest.mark.asyncio
@@ -282,7 +246,7 @@ async def test_no_due_tasks_is_a_noop(monkeypatch, _rem):
         return []
 
     monkeypatch.setattr(monitor.memory, "due_tasks", due_tasks)
-    assert await monitor.check_calendar({"id": "f1", "phone": "9"}) == 0
+    assert await monitor.check_calendar({"id": "f1"}) == 0
 
 
 @pytest.mark.asyncio

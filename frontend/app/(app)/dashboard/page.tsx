@@ -65,7 +65,7 @@ export default function DashboardPage() {
             <Tag tone="green" dot>{t("Autonomous monitoring")}</Tag>
             <span className="font-mono text-xs text-faint">{t("updated")} {timeAgo(data.generated_at, t)}</span>
           </div>
-          <h1 className="display text-4xl text-ink">{t("Namaste")}, {farm.farmer.split(" ")[0]}.</h1>
+          <h1 className="display text-4xl text-ink">{t("Namaste")}, {(farm.farmer ?? "").split(" ")[0] || t("farmer")}.</h1>
           <p className="mt-1.5 text-[15px] text-muted">
             {farm.location} · {farm.farm_size_acres} {t("acres")} · {t(farm.farming_type)}
           </p>

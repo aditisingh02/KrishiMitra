@@ -9,7 +9,9 @@ from app.core import auth
 
 PROTECTED = [
     ("get", "/api/farm"),
-    ("get", "/api/farm/exists"),
+    ("get", "/api/profile"),
+    ("get", "/api/profile/exists"),
+    ("get", "/api/farms"),
     ("get", "/api/dashboard"),
     ("post", "/api/consult"),
     ("post", "/api/weekly-plan"),

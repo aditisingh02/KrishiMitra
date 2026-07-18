@@ -42,7 +42,41 @@ def test_dosage_contradicting_kb_is_blocking():
     """500ml/litre of neem oil is ~100x the KB dose - must not reach a farmer."""
     report = safety.check_text("Neem oil spray: mix 500ml neem oil per litre of water.")
     assert not report.safe
-    assert any("not grounded" in b for b in report.blocking)
+    assert any("contradicts" in b for b in report.blocking)
+
+
+def test_rescaled_dose_is_allowed():
+    """Correct advice rescales constantly. KB says 5ml/litre; 20ml for 4 litres is
+    the same concentration and must not be blocked."""
+    report = safety.check_text("Neem oil spray: mix 20ml neem oil in 4 litres of water.")
+    assert report.safe, report.blocking
+
+
+def test_ratio_expressed_as_volumes_is_not_blocked():
+    """Regression from a real WhatsApp consult.
+
+    The KB gives powdery-mildew milk spray as a ratio (1:9). The model correctly
+    answered '100ml milk in 1L water' - the same thing in different units - and the
+    old literal check blocked it, so the farmer got no answer at all.
+    """
+    report = safety.check_text(
+        "For Powdery Mildew, spray diluted raw milk - 100ml milk in 1L of water."
+    )
+    assert report.safe, report.blocking
+    assert report.warnings  # flagged as unverifiable, but still delivered
+
+
+def test_dosage_for_one_prep_is_not_checked_against_another():
+    """Regression: quantities must be attributed per sentence.
+
+    Both doses below are exactly what the KB states for their own preparation.
+    Pooling them across the whole answer checked neem's 5ml against Jeevamrut's
+    numbers and blocked a correct answer.
+    """
+    report = safety.check_text(
+        "Apply Jeevamrut at 200L per acre. Then use Neem oil spray at 5ml per litre."
+    )
+    assert report.safe, report.blocking
 
 
 def test_jeevamrut_kb_dosage_passes():

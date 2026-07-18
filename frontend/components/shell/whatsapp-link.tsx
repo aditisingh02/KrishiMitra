@@ -9,9 +9,9 @@ import { useT } from "@/lib/i18n-runtime";
 /**
  * WhatsApp link status + a "Send test" button.
  *
- * WhatsApp is how proactive alerts reach a farmer who isn't in the app, so a
- * silently unlinked number means silently missed alerts. This makes the state
- * visible and lets the farmer prove delivery works.
+ * WhatsApp is an inbound Q&A channel: once linked, the farmer can send a crop
+ * photo (diagnose) or a question (consult) from their phone. No proactive alerts
+ * are pushed. This card makes the link state visible and lets them confirm it.
  *
  * Two failure modes are shown separately because only one is the farmer's to fix:
  * no phone number (they can), or the server has no Twilio credentials (they
@@ -61,7 +61,7 @@ export function WhatsAppLink() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-ink">{t("WhatsApp alerts")}</span>
+              <span className="text-sm font-medium text-ink">{t("Ask on WhatsApp")}</span>
               {status.linked ? (
                 <Tag tone="green" dot>{t("Linked")}</Tag>
               ) : (
@@ -72,12 +72,13 @@ export function WhatsAppLink() {
             <p className="mt-1 text-sm text-muted">
               {status.linked ? (
                 <>
-                  {t("Alerts go to")} <span className="font-mono text-charcoal">{status.phone_masked}</span>
+                  {t("Send crop photos & questions from")}{" "}
+                  <span className="font-mono text-charcoal">{status.phone_masked}</span>
                 </>
               ) : !status.has_phone ? (
-                t("Add your WhatsApp number to your farm profile to get crop alerts here.")
+                t("Add your WhatsApp number in your profile to ask questions and diagnose crops on WhatsApp.")
               ) : (
-                t("WhatsApp isn't set up on the server yet. Your number is saved - alerts will start once it's enabled.")
+                t("WhatsApp isn't set up on the server yet. Your number is saved - it'll work once it's enabled.")
               )}
             </p>
 

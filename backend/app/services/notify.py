@@ -60,63 +60,31 @@ async def send_whatsapp(to_number: str, body: str) -> bool:
 
 
 # ---- farmer-facing message templates ----
-# Outbound WhatsApp is the one surface where we can't rely on the UI's language
-# switcher: the farmer reads it in their messaging app. Every string a farmer sees
-# gets translated into their language, not just the alert body.
-
-ALERT_HEADER = "KrishiMitra alert for {name}"
+# WhatsApp is inbound-only (consult + diagnose). The only outbound messages are
+# direct replies to what a farmer sent, plus this one-off link test. No proactive
+# alerts are pushed. The farmer reads these in their messaging app, so localize.
 TEST_MESSAGE = (
     "This is a test message from KrishiMitra. Your WhatsApp is linked correctly - "
-    "you'll get crop alerts here, and you can send a photo or question any time."
+    "you can now send a crop photo or ask a question here any time."
 )
 
 
 async def _localize(text: str, lang: str | None) -> str:
-    """Translate a template into the farm's language (English passes through)."""
+    """Translate a message into the farmer's language (English passes through)."""
     if not lang or lang == "en":
         return text
     try:
         return (await i18n.translate([text], lang)).get(text, text)
-    except Exception as e:  # noqa: BLE001 - never lose the alert to a translation failure
-        logger.warning("alert localization failed (%s): %s", lang, e)
+    except Exception as e:  # noqa: BLE001 - never lose the message to a translation failure
+        logger.warning("message localization failed (%s): %s", lang, e)
         return text
 
 
-async def send_alert(phone: str, farmer: str, body: str, lang: str | None) -> bool:
-    """Send a proactive alert, fully localized.
-
-    `body` arrives already translated (the dashboard localizes alert text), but the
-    header wrapping it did not - so an alert would reach a Hindi farmer with an
-    English preamble. Translate the header too.
-
-    Translate the *template*, then interpolate. Formatting the name in first would
-    make every farmer's name part of the i18n cache key - a guaranteed miss, and
-    therefore a fresh LLM call, on every single alert we send.
-    """
-    header = (await _localize(ALERT_HEADER, lang)).replace("{name}", farmer)
-    return await send_whatsapp(phone, f"🌱 {header}:\n\n{body}")
+async def localize_text(text: str, lang: str | None) -> str:
+    """Public: localize a single message string (cached via i18n)."""
+    return await _localize(text, lang)
 
 
 async def send_test(phone: str, lang: str | None) -> bool:
     """Send the 'your WhatsApp is linked' confirmation."""
     return await send_whatsapp(phone, f"🌱 {await _localize(TEST_MESSAGE, lang)}")
-
-
-async def localize_task(task: dict, lang: str | None) -> str:
-    """Render a calendar task as a reminder in the farmer's language.
-
-    Task text is model-generated per crop, so unlike the fixed templates above it
-    can't be pre-translated - it goes through the same cached translator the UI
-    uses, keyed on the task text itself.
-    """
-    parts = [task["title"]]
-    if task.get("detail"):
-        parts.append(task["detail"])
-    if not lang or lang == "en":
-        return "\n\n".join(parts)
-    try:
-        tr = await i18n.translate(parts, lang)
-        return "\n\n".join(tr.get(p, p) for p in parts)
-    except Exception as e:  # noqa: BLE001 - a reminder in English beats no reminder
-        logger.warning("task localization failed (%s): %s", lang, e)
-        return "\n\n".join(parts)

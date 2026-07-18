@@ -64,3 +64,21 @@ async def get_current_user(
     # body, so this is set by the time the limiter reads it.
     request.state.user_id = user_id
     return user_id
+
+
+async def get_active_farm(user: str = Depends(get_current_user)) -> str:
+    """Resolve the caller's currently-active farm id.
+
+    A profile owns many farms but the AI runs on one at a time. Per-farm routes
+    depend on this instead of using the Clerk id directly, so the farm can be
+    switched without threading an id through every request.
+    """
+    from app.services.memory import memory  # local import avoids an import cycle
+
+    profile = await memory.get_profile(user)
+    if not profile:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No profile yet - complete onboarding")
+    farm_id = profile.get("active_farm_id")
+    if not farm_id or not await memory.farm_exists(farm_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No farm yet - add a farm to continue")
+    return farm_id

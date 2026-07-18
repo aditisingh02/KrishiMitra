@@ -17,7 +17,8 @@ import {
   Trash,
   BellRinging,
 } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useT } from "@/lib/i18n-runtime";
 
 const KIND_META: Record<TaskKind, { icon: any; tone: "green" | "blue" | "yellow" | "neutral" }> = {
@@ -41,10 +42,22 @@ function daysAway(iso: string, todayIso: string): number {
   return Math.round((a - b) / 86_400_000);
 }
 
+// useSearchParams() needs a Suspense boundary above it, or the build fails with
+// "should be wrapped in a suspense boundary".
 export default function CalendarPage() {
+  return (
+    <Suspense fallback={<div className="flex justify-center py-20"><CircleNotch className="h-6 w-6 animate-spin text-faint" /></div>}>
+      <Calendar />
+    </Suspense>
+  );
+}
+
+function Calendar() {
   const t = useT();
+  const params = useSearchParams();
   const [cycles, setCycles] = useState<CropCycle[] | null>(null);
   const [today, setToday] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [farmCrops, setFarmCrops] = useState<string[]>([]);
   const [crop, setCrop] = useState("");
   const [sownOn, setSownOn] = useState(new Date().toISOString().slice(0, 10));
   const [creating, setCreating] = useState(false);
@@ -59,9 +72,22 @@ export default function CalendarPage() {
       setCycles([]);
     }
   }
+
   useEffect(() => {
     load();
+    // Offer the farm's own crops rather than making the farmer retype a name -
+    // and a typo here means mandi lookups and the KB miss.
+    api
+      .farm()
+      .then(({ farm }) => setFarmCrops((farm.crops ?? []).map((c) => c.name).filter(Boolean)))
+      .catch(() => setFarmCrops([]));
   }, []);
+
+  // Deep link from the profile page ("Set date" on a crop) pre-fills the crop.
+  useEffect(() => {
+    const preset = params.get("crop");
+    if (preset) setCrop(preset);
+  }, [params]);
 
   async function addCycle() {
     if (!crop.trim() || creating) return;
@@ -123,13 +149,21 @@ export default function CalendarPage() {
       <Card interactive={false}>
         <span className="overline">{t("Start a crop cycle")}</span>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          {/* Free text, but suggests the crops already on the farm profile. A
+              mistyped name silently misses both the mandi listing and the KB. */}
           <input
+            list="farm-crops"
             value={crop}
             onChange={(e) => setCrop(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addCycle()}
-            placeholder={t("Which crop? e.g. Tomato")}
+            placeholder={farmCrops.length ? t("Pick or type a crop") : t("Which crop? e.g. Tomato")}
             className="flex-1 rounded-md border border-line bg-surface px-4 py-2.5 text-sm text-ink placeholder:text-faint focus:border-faint/50 focus:outline-none"
           />
+          <datalist id="farm-crops">
+            {farmCrops.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
           <input
             type="date"
             value={sownOn}

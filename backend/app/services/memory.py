@@ -11,6 +11,7 @@ add `await`; two new methods - `add_memory` and `recall` - power semantic recall
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,17 @@ from app.core.fireworks import fireworks
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _profile_dict(p: "Profile") -> dict[str, Any]:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "phone": p.phone,
+        "language": p.language,
+        "default_location": p.default_location,
+        "active_farm_id": p.active_farm_id,
+    }
 
 
 def _task_dict(t: "CalendarTask") -> dict[str, Any]:
@@ -52,15 +64,41 @@ def _norm_phone(phone: str | None) -> str | None:
 # --------------------------------------------------------------------------- #
 # ORM models
 # --------------------------------------------------------------------------- #
+class Profile(Base):
+    """The farmer. One per Clerk user. Owns one or more farms.
+
+    Identity + contact live here (name, WhatsApp, language); everything the AI is
+    grounded on (crops, soil, location, weather) lives on the individual Farm. The
+    AI always operates on ONE farm - `active_farm_id` - so a farmer with plots in
+    two villages gets advice for whichever they're currently looking at.
+    """
+
+    __tablename__ = "profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # Clerk user id
+    name: Mapped[str] = mapped_column(String)
+    phone: Mapped[str | None] = mapped_column(String, index=True)  # normalized 10-digit
+    language: Mapped[str | None] = mapped_column(String)
+    default_location: Mapped[str | None] = mapped_column(String)  # seeds new farms
+    active_farm_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+    updated_at: Mapped[str] = mapped_column(String, default=_now)
+
+
 class Farm(Base):
     __tablename__ = "farms"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # Clerk user id
-    phone: Mapped[str | None] = mapped_column(String, index=True)  # normalized 10-digit
+    # A generated id, NOT the Clerk user id (a user can own several farms). The
+    # farm that predates multi-farm keeps its old id == user id, so the events /
+    # notifications / memories / calendar rows already keyed to it stay valid.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String, index=True)  # owning Clerk user
+    name: Mapped[str | None] = mapped_column(String)
+    phone: Mapped[str | None] = mapped_column(String, index=True)  # denormalized from profile
     language: Mapped[str | None] = mapped_column(String)
     lat: Mapped[float | None] = mapped_column()
     lon: Mapped[float | None] = mapped_column()
-    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # full profile
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # full farm blob
     created_at: Mapped[str] = mapped_column(String, default=_now)
     updated_at: Mapped[str] = mapped_column(String, default=_now)
 
@@ -157,7 +195,77 @@ class Memory(Base):
 
 
 class FarmMemory:
-    # ---------- farm twin (farm_id == authenticated Clerk user id) ----------
+    # ---------- profile (the farmer; keyed by Clerk user id) ----------
+    async def get_profile(self, user_id: str) -> dict[str, Any] | None:
+        async with SessionLocal() as s:
+            row = await s.get(Profile, user_id)
+            return _profile_dict(row) if row else None
+
+    async def profile_exists(self, user_id: str) -> bool:
+        async with SessionLocal() as s:
+            return await s.get(Profile, user_id) is not None
+
+    async def save_profile(self, user_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        now = _now()
+        async with SessionLocal() as s:
+            row = await s.get(Profile, user_id)
+            if row is None:
+                row = Profile(id=user_id, name=patch.get("name") or "Farmer", created_at=now)
+                s.add(row)
+            for field in ("name", "language", "active_farm_id"):
+                if field in patch and patch[field] is not None:
+                    setattr(row, field, patch[field])
+            if "default_location" in patch:
+                row.default_location = patch["default_location"]
+            if "phone" in patch:
+                row.phone = _norm_phone(patch["phone"])  # None clears the link
+            row.updated_at = now
+            await s.commit()
+            saved = _profile_dict(row)
+        # Identity is denormalized onto each farm so the agent layer never has to
+        # join - keep the copies in step when the profile changes.
+        if any(k in patch for k in ("name", "language", "phone")):
+            await self._propagate_to_farms(user_id, saved)
+        return saved
+
+    async def profile_by_phone(self, phone: str) -> dict[str, Any] | None:
+        """Resolve an inbound WhatsApp number to a profile (indexed, normalized)."""
+        digits = _norm_phone(phone)
+        if not digits:
+            return None
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(select(Profile).where(Profile.phone == digits))
+            ).scalars().first()
+            return _profile_dict(row) if row else None
+
+    async def set_active_farm(self, user_id: str, farm_id: str) -> bool:
+        async with SessionLocal() as s:
+            profile = await s.get(Profile, user_id)
+            farm = await s.get(Farm, farm_id)
+            if not profile or not farm or farm.profile_id != user_id:
+                return False  # can't activate a farm you don't own
+            profile.active_farm_id = farm_id
+            profile.updated_at = _now()
+            await s.commit()
+            return True
+
+    async def _propagate_to_farms(self, user_id: str, profile: dict[str, Any]) -> None:
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(select(Farm).where(Farm.profile_id == user_id))
+            ).scalars().all()
+            for row in rows:
+                data = dict(row.data)
+                data["farmer"] = profile.get("name")
+                data["language"] = profile.get("language")
+                data["phone"] = profile.get("phone")
+                row.data = data
+                row.language = profile.get("language")
+                row.phone = _norm_phone(profile.get("phone"))
+            await s.commit()
+
+    # ---------- farms (one profile -> many) ----------
     async def get_farm(self, farm_id: str) -> dict[str, Any]:
         async with SessionLocal() as s:
             row = await s.get(Farm, farm_id)
@@ -167,30 +275,56 @@ class FarmMemory:
         async with SessionLocal() as s:
             return await s.get(Farm, farm_id) is not None
 
+    async def owns_farm(self, user_id: str, farm_id: str) -> bool:
+        async with SessionLocal() as s:
+            row = await s.get(Farm, farm_id)
+            return bool(row and row.profile_id == user_id)
+
+    async def list_farms(self, user_id: str) -> list[dict[str, Any]]:
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(Farm).where(Farm.profile_id == user_id).order_by(Farm.created_at)
+                )
+            ).scalars().all()
+            return [dict(r.data) for r in rows]
+
     async def all_farms(self) -> list[dict[str, Any]]:
         async with SessionLocal() as s:
             rows = (await s.execute(select(Farm.data))).scalars().all()
         return [dict(d) for d in rows]
 
-    async def farm_by_phone(self, phone: str) -> dict[str, Any] | None:
-        """Match an inbound WhatsApp number via the indexed normalized-phone column."""
-        digits = _norm_phone(phone)
-        if not digits:
-            return None
-        async with SessionLocal() as s:
-            row = (
-                await s.execute(select(Farm).where(Farm.phone == digits))
-            ).scalars().first()
-            return dict(row.data) if row else None
+    async def create_farm(self, user_id: str, farm: dict[str, Any]) -> dict[str, Any]:
+        """Create a new farm under a profile, stamping the owner's identity onto it."""
+        farm_id = uuid.uuid4().hex
+        profile = await self.get_profile(user_id) or {}
+        farm = {
+            **farm,
+            "id": farm_id,
+            "profile_id": user_id,
+            "farmer": profile.get("name"),
+            "language": profile.get("language"),
+            "phone": profile.get("phone"),
+        }
+        return await self._write_farm(farm, farm_id, user_id)
 
     async def save_farm(self, farm: dict[str, Any], farm_id: str) -> dict[str, Any]:
-        farm = {**farm, "id": farm_id}
+        """Update an existing farm in place (keeps id + owner)."""
+        async with SessionLocal() as s:
+            row = await s.get(Farm, farm_id)
+            owner = row.profile_id if row else farm.get("profile_id")
+        return await self._write_farm({**farm, "id": farm_id}, farm_id, owner)
+
+    async def _write_farm(self, farm: dict[str, Any], farm_id: str, owner: str | None) -> dict[str, Any]:
         now = _now()
+        farm = {**farm, "id": farm_id, "profile_id": owner}
         async with SessionLocal() as s:
             row = await s.get(Farm, farm_id)
             if row is None:
-                row = Farm(id=farm_id, created_at=now)
+                row = Farm(id=farm_id, profile_id=owner, created_at=now)
                 s.add(row)
+            row.profile_id = owner
+            row.name = farm.get("name")
             row.data = farm
             row.phone = _norm_phone(farm.get("phone"))
             row.language = farm.get("language")
@@ -204,6 +338,27 @@ class FarmMemory:
         farm = await self.get_farm(farm_id)
         farm.update(patch)
         return await self.save_farm(farm, farm_id)
+
+    async def delete_farm(self, user_id: str, farm_id: str) -> bool:
+        async with SessionLocal() as s:
+            row = await s.get(Farm, farm_id)
+            if not row or row.profile_id != user_id:
+                return False
+            # Remove the farm's dependent rows so nothing dangles.
+            for model in (Event, Notification, CropCycle, CalendarTask, Memory):
+                await s.execute(delete(model).where(model.farm_id == farm_id))
+            await s.delete(row)
+            # If this was the active farm, fall back to another of the profile's farms.
+            profile = await s.get(Profile, user_id)
+            if profile and profile.active_farm_id == farm_id:
+                other = (
+                    await s.execute(
+                        select(Farm.id).where(Farm.profile_id == user_id, Farm.id != farm_id).limit(1)
+                    )
+                ).scalars().first()
+                profile.active_farm_id = other
+            await s.commit()
+            return True
 
     # ---------- events / history ----------
     async def add_event(
@@ -263,7 +418,7 @@ class FarmMemory:
             await s.commit()
             return note.id
 
-    async def list_notifications(self, farm_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    async def list_notifications(self, farm_id: str, limit: int = 50) -> list[dict[str, Any]]:
         async with SessionLocal() as s:
             rows = (
                 await s.execute(

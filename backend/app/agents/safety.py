@@ -96,6 +96,32 @@ def _quantities(text: str) -> set[str]:
     return {_normalise_qty(m) for m in _QTY_RE.finditer(text or "")}
 
 
+# How far a dosage may deviate from the KB before we call it a contradiction.
+# Correct advice rescales constantly ("5ml/litre" -> "50ml for 10 litres"), so a
+# tight bound would reject good answers. 5x is loose enough for honest rescaling
+# and tight enough to catch the failure that actually harms a farmer: an
+# order-of-magnitude overdose.
+DOSE_TOLERANCE = 5.0
+
+_SENTENCE_RE = re.compile(r"[.!?\n;]+")
+
+
+def _quantities_by_unit(text: str) -> dict[str, set[float]]:
+    """{unit: {values}} for one chunk of text. Ratios collapse to unit 'ratio'."""
+    out: dict[str, set[float]] = {}
+    for m in _QTY_RE.finditer(text or ""):
+        if m.group(5) and m.group(6):  # a:b
+            out.setdefault("ratio", set()).add(int(m.group(5)) / max(int(m.group(6)), 1))
+            continue
+        if m.group(3):
+            out.setdefault("%", set()).add(float(m.group(3)))
+            continue
+        unit = (m.group(2) or "").lower()
+        unit = _UNIT_ALIASES.get(unit, unit)
+        out.setdefault(unit, set()).add(float(m.group(1)))
+    return out
+
+
 def _kb_topics_in(text: str) -> list[dict[str, str]]:
     """KB entries whose topic is explicitly named in the text."""
     low = (text or "").lower()
@@ -108,30 +134,76 @@ def find_prohibited(text: str) -> list[str]:
 
 
 def check_dosages(text: str) -> tuple[list[str], list[str]]:
-    """Cross-check dosages for KB-known preparations. Returns (blocking, warnings)."""
+    """Cross-check dosages against the KB. Returns (blocking, warnings).
+
+    Two hard-won rules, both from real false positives:
+
+    1. **Attribute per sentence, not per document.** Comparing every quantity in an
+       answer against the union of every KB entry named anywhere in it means a
+       correct "neem oil 5ml/litre" gets checked against *Jeevamrut's* numbers
+       merely because another sentence mentioned Jeevamrut. Advice that covers
+       several preparations - i.e. good advice - was the most likely to be blocked.
+
+    2. **Only a same-unit magnitude contradiction blocks.** A quantity simply not
+       present in the KB is a warning, never a block. The KB gives powdery-mildew
+       milk spray as a ratio (1:9); a model correctly saying "100ml milk in 1L
+       water" states the same thing in different units. Demanding a literal match
+       rejects correct answers, and a farmer who gets nothing is worse off than one
+       who gets a verified answer phrased differently.
+
+    What still blocks is the thing that actually hurts: the same preparation, the
+    same unit, an order-of-magnitude apart ("500ml neem per litre" vs the KB's 5ml).
+    """
     blocking: list[str] = []
     warnings: list[str] = []
-    topics = _kb_topics_in(text)
-    if not topics:
-        return blocking, warnings
 
-    out_qty = _quantities(text)
-    if not out_qty:
-        return blocking, warnings
+    for sentence in _SENTENCE_RE.split(text or ""):
+        topics = _kb_topics_in(sentence)
+        if not topics:
+            continue
+        out_units = _quantities_by_unit(sentence)
+        if not out_units:
+            continue
 
-    # The union of every quantity the KB states for the named preparations.
-    kb_qty: set[str] = set()
-    for chunk in topics:
-        kb_qty |= _quantities(chunk["text"])
+        kb_units: dict[str, set[float]] = {}
+        for chunk in topics:
+            for unit, values in _quantities_by_unit(chunk["text"]).items():
+                kb_units.setdefault(unit, set()).update(values)
+        if not kb_units:
+            continue
 
-    unknown = out_qty - kb_qty
-    if unknown and kb_qty:
         named = ", ".join(c["topic"] for c in topics)
-        blocking.append(
-            f"Dosage not grounded in knowledge base for {named}: "
-            f"{', '.join(sorted(unknown))} (KB states: {', '.join(sorted(kb_qty))})"
-        )
+        for unit, values in out_units.items():
+            kb_values = kb_units.get(unit)
+            if not kb_values:
+                # Different unit entirely (ratio vs ml). Can't compare - say so,
+                # don't reject.
+                warnings.append(
+                    f"Dosage for {named} given in units the knowledge base doesn't state "
+                    f"({unit}) - could not verify"
+                )
+                continue
+            for value in values:
+                if any(_within_tolerance(value, kb) for kb in kb_values):
+                    continue
+                blocking.append(
+                    f"Dosage contradicts knowledge base for {named}: "
+                    f"{_fmt(value)}{unit} (KB states {', '.join(_fmt(v) + unit for v in sorted(kb_values))})"
+                )
     return blocking, warnings
+
+
+def _within_tolerance(value: float, reference: float) -> bool:
+    if value == reference:
+        return True
+    if value <= 0 or reference <= 0:
+        return False
+    ratio = value / reference
+    return 1 / DOSE_TOLERANCE <= ratio <= DOSE_TOLERANCE
+
+
+def _fmt(value: float) -> str:
+    return str(int(value)) if value == int(value) else str(value)
 
 
 def check_text(text: str) -> SafetyReport:
