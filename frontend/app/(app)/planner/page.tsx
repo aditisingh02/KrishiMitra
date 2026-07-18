@@ -2,27 +2,45 @@
 import { api } from "@/lib/api";
 import { Tag, Button, Card } from "@/components/ui/primitives";
 import { FarmLayout } from "@/components/ui/farm-layout";
+import { CropCalendar } from "@/components/planner/crop-calendar";
 import { motion, AnimatePresence } from "framer-motion";
-import { CalendarBlank, StackSimple, CircleNotch, Plant, Sparkle, Flask, UploadSimple, CheckCircle } from "@phosphor-icons/react";
-import { useRef, useState } from "react";
+import { CalendarCheck, StackSimple, CircleNotch, Flask, UploadSimple, CheckCircle } from "@phosphor-icons/react";
+import { Suspense, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useT } from "@/lib/i18n-runtime";
 
+type Tab = "calendar" | "cropping" | "soil";
+
+// useSearchParams (used by CropCalendar + the ?tab= deep link) needs a Suspense
+// boundary above it.
 export default function PlannerPage() {
+  return (
+    <Suspense fallback={<div className="flex justify-center py-20"><CircleNotch className="h-6 w-6 animate-spin text-faint" /></div>}>
+      <Planner />
+    </Suspense>
+  );
+}
+
+function Planner() {
   const t = useT();
-  const [tab, setTab] = useState<"weekly" | "cropping" | "soil">("weekly");
+  const params = useSearchParams();
+  const initial = (params.get("tab") as Tab) || "calendar";
+  const [tab, setTab] = useState<Tab>(
+    ["calendar", "cropping", "soil"].includes(initial) ? initial : "calendar",
+  );
   return (
     <div className="mx-auto max-w-3xl space-y-7">
       <div>
         <Tag tone="green" className="mb-3">{t("Personalised coach")}</Tag>
         <h1 className="display text-4xl text-ink">{t("Farm Planner")}</h1>
         <p className="mt-2 text-[15px] leading-relaxed text-muted">
-          {t("A week-by-week natural-farming plan, plus a multilayer cropping designer for new land.")}
+          {t("Every crop's sowing→harvest calendar in one place, plus a cropping designer and soil-card reader.")}
         </p>
       </div>
 
       <div className="flex rounded-md border border-line p-1">
         {([
-          ["weekly", "Weekly plan", CalendarBlank],
+          ["calendar", "Calendar", CalendarCheck],
           ["cropping", "Cropping", StackSimple],
           ["soil", "Soil card", Flask],
         ] as const).map(([key, label, Icon]) => (
@@ -43,7 +61,7 @@ export default function PlannerPage() {
         ))}
       </div>
 
-      {tab === "weekly" ? <WeeklyPlan /> : tab === "cropping" ? <CroppingDesigner /> : <SoilCard />}
+      {tab === "calendar" ? <CropCalendar /> : tab === "cropping" ? <CroppingDesigner /> : <SoilCard />}
     </div>
   );
 }
@@ -137,63 +155,6 @@ function SoilCard() {
   );
 }
 
-function WeeklyPlan() {
-  const t = useT();
-  const [plan, setPlan] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function generate() {
-    setLoading(true);
-    setPlan(null);
-    try {
-      setPlan((await api.weeklyPlan("")).plan);
-    } catch {
-      alert(t("Failed. Is the backend running?"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <Button onClick={generate} disabled={loading} size="lg" className="w-full">
-        {loading ? <CircleNotch className="h-5 w-5 animate-spin" /> : <Sparkle className="h-5 w-5" />}
-        {t("Generate this week's plan")}
-      </Button>
-
-      <AnimatePresence>
-        {plan && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-3">
-            {plan.week_focus && (
-              <Card interactive={false}>
-                <p className="overline mb-1">{t("This week's focus")}</p>
-                <p className="font-serif text-2xl text-ink">{t(plan.week_focus)}</p>
-              </Card>
-            )}
-            {plan.days?.map((d: any, i: number) => (
-              <motion.div key={i} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }} className="card flex gap-4 p-4">
-                <div className="flex w-16 shrink-0 flex-col items-center justify-center rounded-md border border-line bg-bone py-2">
-                  <span className="overline">{t("Day")}</span>
-                  <span className="text-sm font-medium text-ink">{d.day}</span>
-                </div>
-                <div className="flex-1">
-                  <ul className="space-y-1">
-                    {(d.tasks ?? []).map((task: string, j: number) => (
-                      <li key={j} className="flex items-start gap-2 text-sm text-charcoal">
-                        <Plant className="mt-0.5 h-3.5 w-3.5 shrink-0 text-field-600" /> {t(task)}
-                      </li>
-                    ))}
-                  </ul>
-                  {d.why && <p className="mt-1.5 text-sm text-muted">{t(d.why)}</p>}
-                </div>
-              </motion.div>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
 
 function CroppingDesigner() {
   const t = useT();

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -278,6 +279,90 @@ def _clamp_duration(value: Any, tasks: list[dict[str, Any]], sow_date: date) -> 
         pass
     last = max((date.fromisoformat(t["due_on"]) for t in tasks), default=sow_date)
     return max((last - sow_date).days, 1)
+
+
+# ---------- consult action plan -> dated planner tasks ----------
+# Keyword -> task kind. First match wins; falls back to "other".
+_KIND_KEYWORDS = [
+    ("spray", ("spray", "neem", "pesticid", "fungicid", "foliar")),
+    ("nutrition", ("jeevamrut", "compost", "manure", "fertilis", "fertiliz", "nutrient", "panchagavya", "top-dress", "top dress")),
+    ("irrigation", ("irrigat", "water", "moisture")),
+    ("sowing", ("sow", "seed", "transplant", "intercrop", "plant ")),
+    ("harvest", ("harvest",)),
+    ("scouting", ("scout", "monitor", "inspect", "check for", "watch for")),
+]
+
+_DAYS_RE = re.compile(r"\b(\d{1,3})\s*days?\b", re.IGNORECASE)
+
+
+def parse_when(when: str) -> str | None:
+    """Best-effort ISO date from an action plan's fuzzy `when` text.
+
+    Biased hard toward None: a wrong date is worse than an undated task. Anything
+    relative-to-an-event or seasonal ("after first application", "next planting
+    season", "at flowering") returns None and keeps its label in the task detail.
+    """
+    w = (when or "").strip().lower()
+    if not w:
+        return None
+    today = date.today()
+
+    if any(k in w for k in ("today", "now", "immediately", "right away", "asap")):
+        return today.isoformat()  # covers "today and then every N days" too
+    if "tomorrow" in w:
+        return (today + timedelta(days=1)).isoformat()
+    if "next week" in w:
+        return (today + timedelta(days=7)).isoformat()
+    if "this week" in w:
+        return (today + timedelta(days=2)).isoformat()
+    if "next month" in w:
+        return (today + timedelta(days=30)).isoformat()
+
+    m = _DAYS_RE.search(w)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 365:
+            # "every N days" with no "today" anchor -> first occurrence N days out.
+            return (today + timedelta(days=n)).isoformat()
+    return None  # seasonal / event-relative / unrecognised -> undated
+
+
+def _infer_kind(text: str) -> str:
+    low = text.lower()
+    for kind, words in _KIND_KEYWORDS:
+        if any(word in low for word in words):
+            return kind
+    return "other"
+
+
+def plan_to_tasks(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert a consult action_plan into planner task rows (cycle-less).
+
+    The original `when` label is preserved in `detail` so fuzzy timing
+    ("Every 10 days", "Next planting season") is never lost, even when undated.
+    No per-task safety re-check: the consult answer already passed the guardrail
+    as a whole; re-checking fragments cross-contaminates dosages (see above).
+    """
+    tasks: list[dict[str, Any]] = []
+    for raw in steps or []:
+        if not isinstance(raw, dict):
+            continue
+        action = (raw.get("action") or "").strip()
+        if not action:
+            continue
+        when = (raw.get("when") or "").strip()
+        why = (raw.get("why") or "").strip()
+        detail_bits = [b for b in (why, f"When: {when}" if when else "") if b]
+        tasks.append(
+            {
+                "title": action[:120],
+                "detail": " · ".join(detail_bits)[:500] or None,
+                "kind": _infer_kind(f"{action} {why}"),
+                "due_on": parse_when(when),
+                "source": "consult",
+            }
+        )
+    return tasks
 
 
 async def cropping_design(land: str, location: str, goals: str) -> dict[str, Any]:

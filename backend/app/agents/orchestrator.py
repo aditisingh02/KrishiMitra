@@ -210,8 +210,9 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
 
     # Chat history: store whenever there's usable text OR it was safety-blocked
     # (the UI shows the blocked answer with a banner). Skip only pure parse errors.
+    interaction_id: int | None = None
     if answer or blocked:
-        await memory.add_interaction(
+        interaction_id = await memory.add_interaction(
             farm_id,
             "consult",
             query,
@@ -246,4 +247,5 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
         "agent_outputs": outputs,
         "result": final,
         "language": languages.info(farm.get("language")),
+        "interaction_id": interaction_id,  # for "Add to planner"
     }

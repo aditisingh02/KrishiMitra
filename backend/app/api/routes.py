@@ -436,9 +436,13 @@ async def get_calendar(farm_id: str = Depends(get_active_farm)) -> dict[str, Any
     tasks = await memory.list_tasks(farm_id)
     by_cycle: dict[int, list[dict[str, Any]]] = {}
     for t in tasks:
-        by_cycle.setdefault(t["cycle_id"], []).append(t)
+        if t["cycle_id"] is not None:
+            by_cycle.setdefault(t["cycle_id"], []).append(t)
     return {
         "cycles": [{**c, "tasks": by_cycle.get(c["id"], [])} for c in cycles],
+        # Cycle-less tasks (added from a consult answer) - the "From your questions"
+        # section. Without this split they'd be silently dropped.
+        "general_tasks": [t for t in tasks if t["cycle_id"] is None],
         "today": date.today().isoformat(),
     }
 
@@ -481,6 +485,45 @@ async def update_task(
     if not await memory.set_task_done(farm_id, task_id, req.done):
         raise HTTPException(404, "Task not found")
     return {"ok": True}
+
+
+@router.delete("/calendar/tasks/{task_id}")
+async def delete_task(task_id: int, farm_id: str = Depends(get_active_farm)) -> dict[str, Any]:
+    if not await memory.delete_task(farm_id, task_id):
+        raise HTTPException(404, "Task not found")
+    flows.invalidate_dashboard(farm_id)
+    return {"ok": True}
+
+
+class AddPlanRequest(BaseModel):
+    interaction_id: int
+
+
+@router.post(
+    "/planner/plan",
+    dependencies=[Depends(user_rate_limit(settings.limit_calendar, "calendar"))],
+)
+async def add_plan_to_planner(
+    req: AddPlanRequest, farm_id: str = Depends(get_active_farm)
+) -> dict[str, Any]:
+    """Convert a stored consult action plan into dated planner tasks.
+
+    Takes an `interaction_id`, not raw steps, and re-reads the plan server-side -
+    so only a real, safety-passed, non-blocked consult answer can become tasks
+    (a client can't inject arbitrary task text past the guardrail).
+    """
+    row = await memory.get_interaction(farm_id, req.interaction_id)
+    if not row or row["kind"] != "consult":
+        raise HTTPException(404, "Consult not found")
+    if row["blocked"]:
+        raise HTTPException(422, "That answer was held back for safety - it can't be added.")
+    steps = (row.get("payload") or {}).get("action_plan") or []
+    tasks = flows.plan_to_tasks(steps)
+    if not tasks:
+        raise HTTPException(422, "That answer has no action plan to add.")
+    created = await memory.add_tasks(farm_id, None, tasks)
+    flows.invalidate_dashboard(farm_id)
+    return {"tasks": created}
 
 
 @router.delete("/calendar/cycles/{cycle_id}")

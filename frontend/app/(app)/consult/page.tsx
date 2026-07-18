@@ -17,6 +17,8 @@ import {
   CircleNotch,
   ClockCounterClockwise,
   CaretDown,
+  CalendarPlus,
+  Check,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-runtime";
@@ -75,7 +77,26 @@ export default function ConsultPage() {
   const [suggestions, setSuggestions] = useState<string[]>(() => buildSuggestions(null));
   const [history, setHistory] = useState<Interaction[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [addingPlan, setAddingPlan] = useState(false);
+  const [plannerAdded, setPlannerAdded] = useState(false);
   const recognitionRef = useRef<any>(null);
+
+  async function addToPlanner() {
+    if (!result?.interaction_id || addingPlan) return;
+    setAddingPlan(true);
+    try {
+      await api.addPlan(result.interaction_id);
+      setPlannerAdded(true);
+    } catch (e) {
+      alert(
+        e instanceof ApiError && e.status === 422
+          ? t("This plan couldn't be added.")
+          : t("Couldn't add to planner. Please try again."),
+      );
+    } finally {
+      setAddingPlan(false);
+    }
+  }
 
   // Recommended questions use the active farm's real crop; history is the stored
   // conversation for that farm.
@@ -131,6 +152,7 @@ export default function ConsultPage() {
     setLoading(true);
     setResult(null);
     setError(null);
+    setPlannerAdded(false);
     try {
       const res = await api.consult(text);
       setResult(res);
@@ -321,7 +343,23 @@ export default function ConsultPage() {
             {/* action plan */}
             {(result.result.action_plan?.length ?? 0) > 0 && (
               <Card interactive={false}>
-                <span className="overline">{t("Today's action plan")}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="overline">{t("Today's action plan")}</span>
+                  {/* Save this plan into the Planner as dated tasks. Only for a real,
+                      non-blocked answer that was actually stored (interaction_id). */}
+                  {result.interaction_id && !result.result._blocked && (
+                    <button
+                      onClick={addToPlanner}
+                      disabled={addingPlan || plannerAdded}
+                      className="flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs font-medium text-charcoal transition-colors hover:bg-bone disabled:opacity-60"
+                    >
+                      {addingPlan ? <CircleNotch className="h-3.5 w-3.5 animate-spin" />
+                        : plannerAdded ? <Check className="h-3.5 w-3.5 text-field-600" weight="bold" />
+                        : <CalendarPlus className="h-3.5 w-3.5" />}
+                      {plannerAdded ? t("Added to planner") : t("Add to planner")}
+                    </button>
+                  )}
+                </div>
                 <div className="mt-4 space-y-0">
                   {result.result.action_plan!.map((step, i) => (
                     <motion.div

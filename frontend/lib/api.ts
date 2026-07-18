@@ -100,20 +100,24 @@ export type ConsultResult = {
     _safety?: { safe: boolean; blocking: string[]; warnings: string[] };
   };
   language: LangInfo;
+  /** Stored interaction id - used by "Add to planner". */
+  interaction_id?: number | null;
 };
 
 export type TaskKind = "sowing" | "irrigation" | "nutrition" | "spray" | "scouting" | "harvest" | "other";
 
 export type CalendarTask = {
   id: number;
-  cycle_id: number;
+  /** NULL for cycle-less tasks (added from a consult answer). */
+  cycle_id: number | null;
   title: string;
   detail: string | null;
   kind: TaskKind;
-  /** ISO date (YYYY-MM-DD), computed server-side from the model's day offset. */
-  due_on: string;
+  /** ISO date (YYYY-MM-DD); NULL when timing couldn't be dated. */
+  due_on: string | null;
   done: boolean;
   notified_on: string | null;
+  source?: string | null; // "calendar" | "consult"
 };
 
 export type CropCycle = {
@@ -256,9 +260,13 @@ export const api = {
     jpost<{ design: any }>("/api/cropping-design", { land, location, goals }),
   diagnose: (file: File, note = "") => upload<{ diagnosis: any }>("/api/diagnose", file, { note }),
   soilCard: (file: File) => upload<{ soil: any; extracted: any }>("/api/soil-card", file),
-  calendar: () => jget<{ cycles: CropCycle[]; today: string }>("/api/calendar"),
+  calendar: () =>
+    jget<{ cycles: CropCycle[]; general_tasks: CalendarTask[]; today: string }>("/api/calendar"),
   createCycle: (crop: string, sown_on: string) =>
     jpost<{ cycle: CropCycle }>("/api/calendar/cycles", { crop, sown_on }),
+  deleteTask: (id: number) => jpost<{ ok: boolean }>(`/api/calendar/tasks/${id}`, {}, "DELETE"),
+  addPlan: (interaction_id: number) =>
+    jpost<{ tasks: CalendarTask[] }>("/api/planner/plan", { interaction_id }),
   setTaskDone: (id: number, done: boolean) =>
     jpost<{ ok: boolean }>(`/api/calendar/tasks/${id}`, { done }, "PATCH"),
   deleteCycle: (id: number) => jpost<{ ok: boolean }>(`/api/calendar/cycles/${id}`, {}, "DELETE"),

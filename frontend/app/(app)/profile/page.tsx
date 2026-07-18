@@ -300,7 +300,7 @@ function FarmCard({ farm, active, onActivate, onDelete, onSaved }: {
                       calendar in view, so switch to it first if needed. */}
                   <button
                     onClick={() => {
-                      const go = () => router.push(`/calendar?crop=${encodeURIComponent(crop.name)}`);
+                      const go = () => router.push(`/planner?tab=calendar&crop=${encodeURIComponent(crop.name)}`);
                       active ? go() : (onActivate(), setTimeout(go, 300));
                     }}
                     className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs text-charcoal hover:bg-bone"

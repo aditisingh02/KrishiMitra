@@ -5,7 +5,6 @@ import {
   SquaresFour,
   Microphone,
   Scan,
-  CalendarBlank,
   CalendarCheck,
   TrendUp,
   UserCircle,
@@ -26,8 +25,7 @@ import { useT } from "@/lib/i18n-runtime";
 const NAV = [
   { href: "/consult", label: "Consult", icon: Microphone },
   { href: "/diagnose", label: "Diagnose", icon: Scan },
-  { href: "/calendar", label: "Calendar", icon: CalendarCheck },
-  { href: "/planner", label: "Planner", icon: CalendarBlank },
+  { href: "/planner", label: "Planner", icon: CalendarCheck },
   { href: "/market", label: "Market", icon: TrendUp },
   { href: "/profile", label: "Profile", icon: UserCircle },
   { href: "/dashboard", label: "Dashboard", icon: SquaresFour },

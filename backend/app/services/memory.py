@@ -63,6 +63,7 @@ def _task_dict(t: "CalendarTask") -> dict[str, Any]:
         "due_on": t.due_on,
         "done": bool(t.done),
         "notified_on": t.notified_on,
+        "source": t.source,
     }
 
 
@@ -173,13 +174,16 @@ class CalendarTask(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     farm_id: Mapped[str] = mapped_column(String, index=True)
-    cycle_id: Mapped[int] = mapped_column(Integer, index=True)
+    # NULL for tasks not tied to a crop cycle (e.g. added from a consult answer).
+    cycle_id: Mapped[int | None] = mapped_column(Integer, index=True)
     title: Mapped[str] = mapped_column(Text)
     detail: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String)  # spray|irrigation|nutrition|scouting|harvest|sowing|other
-    due_on: Mapped[str] = mapped_column(String, index=True)  # ISO date
+    # NULL when the timing couldn't be dated (e.g. "next planting season").
+    due_on: Mapped[str | None] = mapped_column(String, index=True)  # ISO date
     done: Mapped[int] = mapped_column(Integer, default=0)
     notified_on: Mapped[str | None] = mapped_column(String)
+    source: Mapped[str | None] = mapped_column(String)  # calendar | consult
     created_at: Mapped[str] = mapped_column(String, default=_now)
 
 
@@ -603,6 +607,18 @@ class FarmMemory:
     async def recent_interactions(self, farm_id: str, limit: int = 5) -> list[dict[str, Any]]:
         return await self.list_interactions(farm_id, limit=limit)
 
+    async def get_interaction(self, farm_id: str, interaction_id: int) -> dict[str, Any] | None:
+        """Farm-scoped fetch of one interaction (for 'add to planner' re-read)."""
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(Interaction).where(
+                        Interaction.id == interaction_id, Interaction.farm_id == farm_id
+                    )
+                )
+            ).scalars().first()
+            return _interaction_dict(row) if row else None
+
     # ---------- compact context for prompts ----------
     # ---------- crop calendar ----------
     async def add_cycle(
@@ -692,24 +708,30 @@ class FarmMemory:
             await s.commit()
             return True
 
-    async def add_tasks(self, farm_id: str, cycle_id: int, tasks: list[dict[str, Any]]) -> int:
-        """Bulk-insert generated tasks. Returns how many landed."""
+    async def add_tasks(
+        self, farm_id: str, cycle_id: int | None = None, tasks: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        """Bulk-insert tasks. `cycle_id=None` for cycle-less (e.g. consult) tasks;
+        `due_on` may be None (undated). Returns the inserted rows."""
+        tasks = tasks or []
         if not tasks:
-            return 0
+            return []
         async with SessionLocal() as s:
-            for t in tasks:
-                s.add(
-                    CalendarTask(
-                        farm_id=farm_id,
-                        cycle_id=cycle_id,
-                        title=t["title"],
-                        detail=t.get("detail"),
-                        kind=t.get("kind", "other"),
-                        due_on=t["due_on"],
-                    )
+            rows = [
+                CalendarTask(
+                    farm_id=farm_id,
+                    cycle_id=cycle_id,
+                    title=t["title"],
+                    detail=t.get("detail"),
+                    kind=t.get("kind", "other"),
+                    due_on=t.get("due_on"),
+                    source=t.get("source"),
                 )
+                for t in tasks
+            ]
+            s.add_all(rows)
             await s.commit()
-        return len(tasks)
+            return [_task_dict(r) for r in rows]
 
     async def list_tasks(
         self,
@@ -756,6 +778,22 @@ class FarmMemory:
             if not row:
                 return False
             row.done = 1 if done else 0
+            await s.commit()
+            return True
+
+    async def delete_task(self, farm_id: str, task_id: int) -> bool:
+        """Delete one task (farm-scoped). Used to remove consult-added plan steps."""
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(CalendarTask).where(
+                        CalendarTask.id == task_id, CalendarTask.farm_id == farm_id
+                    )
+                )
+            ).scalars().first()
+            if not row:
+                return False
+            await s.delete(row)
             await s.commit()
             return True
 
