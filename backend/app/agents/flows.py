@@ -157,22 +157,40 @@ async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> d
     return {"_raw": result}
 
 
-async def read_soil_card(image_data_url: str, farm_id: str) -> dict[str, Any]:
-    """Extract soil values from a Soil Health Card photo and merge into the farm twin."""
+async def extract_soil_values(image_data_url: str) -> dict[str, Any]:
+    """Vision-read a Soil Health Card photo. Pure extraction - no farm write, so it
+    works while ADDING a farm (before the farm exists)."""
     result = await fireworks.vision(
         "Extract the soil values from this Soil Health Card.",
         image_data_url,
         system=prompts.SOIL_CARD,
         model=settings.model_vision,
     )
-    if isinstance(result, dict) and result.get("readable") and not result.get("_parse_error"):
-        soil = {k: v for k, v in result.items() if k not in {"readable", "_raw", "_parse_error"} and v is not None}
-        farm = await memory.get_farm(farm_id)
+    return result if isinstance(result, dict) else {"_raw": result}
+
+
+def soil_values_from(extracted: dict[str, Any]) -> dict[str, Any]:
+    """The clean, storable soil values from an extraction (drops control keys + nulls).
+
+    These land in the farm's `soil` blob, which context_blob serialises into every
+    agent prompt - so the soil card informs all future advice.
+    """
+    if not (isinstance(extracted, dict) and extracted.get("readable") and not extracted.get("_parse_error")):
+        return {}
+    drop = {"readable", "_raw", "_parse_error", "language"}
+    return {k: v for k, v in extracted.items() if k not in drop and v is not None}
+
+
+async def read_soil_card(image_data_url: str, farm_id: str) -> dict[str, Any]:
+    """Extract soil values and merge them into an existing farm twin."""
+    result = await extract_soil_values(image_data_url)
+    soil = soil_values_from(result)
+    farm = await memory.get_farm(farm_id)
+    if soil:
         merged = {**farm.get("soil", {}), **soil}
         await memory.update_farm({"soil": merged}, farm_id)
         await memory.add_event("soil_card", "Soil Health Card imported", soil, farm_id)
         return {"soil": merged, "extracted": result}
-    farm = await memory.get_farm(farm_id)
     return {"soil": farm.get("soil", {}), "extracted": result}
 
 

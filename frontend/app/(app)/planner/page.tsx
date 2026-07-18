@@ -4,12 +4,12 @@ import { Tag, Button, Card } from "@/components/ui/primitives";
 import { FarmLayout } from "@/components/ui/farm-layout";
 import { CropCalendar } from "@/components/planner/crop-calendar";
 import { motion, AnimatePresence } from "framer-motion";
-import { CalendarCheck, StackSimple, CircleNotch, Flask, UploadSimple, CheckCircle } from "@phosphor-icons/react";
-import { Suspense, useRef, useState } from "react";
+import { CalendarCheck, StackSimple, CircleNotch } from "@phosphor-icons/react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useT } from "@/lib/i18n-runtime";
 
-type Tab = "calendar" | "cropping" | "soil";
+type Tab = "calendar" | "cropping";
 
 // useSearchParams (used by CropCalendar + the ?tab= deep link) needs a Suspense
 // boundary above it.
@@ -26,7 +26,7 @@ function Planner() {
   const params = useSearchParams();
   const initial = (params.get("tab") as Tab) || "calendar";
   const [tab, setTab] = useState<Tab>(
-    ["calendar", "cropping", "soil"].includes(initial) ? initial : "calendar",
+    ["calendar", "cropping"].includes(initial) ? initial : "calendar",
   );
   return (
     <div className="mx-auto max-w-3xl space-y-7">
@@ -34,7 +34,7 @@ function Planner() {
         <Tag tone="green" className="mb-3">{t("Personalised coach")}</Tag>
         <h1 className="display text-4xl text-ink">{t("Farm Planner")}</h1>
         <p className="mt-2 text-[15px] leading-relaxed text-muted">
-          {t("Every crop's sowing→harvest calendar in one place, plus a cropping designer and soil-card reader.")}
+          {t("Every crop's sowing→harvest calendar in one place, plus a multilayer cropping designer.")}
         </p>
       </div>
 
@@ -42,7 +42,6 @@ function Planner() {
         {([
           ["calendar", "Calendar", CalendarCheck],
           ["cropping", "Cropping", StackSimple],
-          ["soil", "Soil card", Flask],
         ] as const).map(([key, label, Icon]) => (
           <button
             key={key}
@@ -61,100 +60,10 @@ function Planner() {
         ))}
       </div>
 
-      {tab === "calendar" ? <CropCalendar /> : tab === "cropping" ? <CroppingDesigner /> : <SoilCard />}
+      {tab === "calendar" ? <CropCalendar /> : <CroppingDesigner />}
     </div>
   );
 }
-
-function SoilCard() {
-  const t = useT();
-  const [preview, setPreview] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  function onFile(f: File) {
-    if (!f.type.startsWith("image/")) return;
-    setFile(f);
-    setResult(null);
-    const reader = new FileReader();
-    reader.onload = () => setPreview(reader.result as string);
-    reader.readAsDataURL(f);
-  }
-
-  async function read() {
-    if (!file || loading) return;
-    setLoading(true);
-    try {
-      setResult(await api.soilCard(file));
-    } catch {
-      alert(t("Failed to read the soil card. Is the backend running?"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const ext = result?.extracted ?? {};
-  const rows: [string, any][] = [
-    [t("Type"), ext.type], [t("pH"), ext.ph], [t("Organic carbon"), ext.organic_carbon],
-    [t("Nitrogen"), ext.nitrogen], [t("Phosphorus"), ext.phosphorus], [t("Potassium"), ext.potassium],
-    [t("EC"), ext.ec],
-  ];
-
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted">
-        {t("Upload a photo of your government Soil Health Card. Kimi vision reads the values (pH, N-P-K, organic carbon) into your farm twin so every recommendation is grounded in your soil.")}
-      </p>
-
-      <div className="card overflow-hidden !p-0">
-        {!preview ? (
-          <div onClick={() => inputRef.current?.click()} className="flex cursor-pointer flex-col items-center gap-3 px-6 py-14 hover:bg-bone/60">
-            <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-line bg-bone text-field-600">
-              <UploadSimple className="h-6 w-6" />
-            </div>
-            <p className="text-sm font-medium text-ink">{t("Upload Soil Health Card")}</p>
-            <p className="font-mono text-xs text-faint">{t("photo or scan · JPG / PNG")}</p>
-            <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-          </div>
-        ) : (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={preview} alt="soil card" className="max-h-72 w-full object-contain bg-bone" />
-        )}
-      </div>
-
-      {preview && !result && (
-        <Button onClick={read} disabled={loading} size="lg" className="w-full">
-          {loading ? <CircleNotch className="h-5 w-5 animate-spin" /> : <Flask className="h-5 w-5" />}
-          {t("Read soil card")}
-        </Button>
-      )}
-
-      {result && (
-        <Card interactive={false}>
-          <div className="mb-3 flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-field-600" weight="bold" />
-            <span className="text-sm font-medium text-ink">{t("Saved to your farm")}</span>
-          </div>
-          <dl className="divide-y divide-line">
-            {rows.filter(([, v]) => v != null && v !== "null").map(([k, v]) => (
-              <div key={k} className="flex justify-between py-2 text-sm">
-                <dt className="text-muted">{k}</dt>
-                <dd className="font-medium capitalize text-ink">{String(v)}</dd>
-              </div>
-            ))}
-          </dl>
-          {ext.notes && <p className="mt-3 text-xs text-muted">{ext.notes}</p>}
-          {(ext.readable === false || ext._parse_error) && (
-            <p className="mt-2 text-sm text-pale-redink">{t("Couldn't read this card clearly - try a sharper, well-lit photo.")}</p>
-          )}
-        </Card>
-      )}
-    </div>
-  );
-}
-
 
 function CroppingDesigner() {
   const t = useT();

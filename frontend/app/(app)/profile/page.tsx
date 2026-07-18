@@ -3,6 +3,7 @@
 import { api, ApiError, type Farm, type Profile } from "@/lib/api";
 import { Button, Card, Tag } from "@/components/ui/primitives";
 import { WhatsAppLink } from "@/components/shell/whatsapp-link";
+import { SoilCardUpload } from "@/components/farm/soil-card-upload";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   CircleNotch, Plus, X, Warning, CheckCircle, CalendarPlus, Plant, Trash,
@@ -187,6 +188,11 @@ function FarmCard({ farm, active, onActivate, onDelete, onSaved }: {
   const [size, setSize] = useState(String(farm.farm_size_acres ?? 1));
   const [farmingType, setFarmingType] = useState(farm.farming_type ?? "Natural Farming");
   const [soilType, setSoilType] = useState(farm.soil?.type ?? "Loamy");
+  // Soil detail fields (pH, N-P-K…) from the twin - shown + editable via a card upload.
+  const [soilExtra, setSoilExtra] = useState<Record<string, any>>(() => {
+    const { type, ...rest } = farm.soil ?? {};
+    return rest;
+  });
   const [crops, setCrops] = useState<CropRow[]>(farm.crops ?? []);
   const [cropInput, setCropInput] = useState("");
   const [materials, setMaterials] = useState<string[]>(farm.inputs_on_hand ?? []);
@@ -215,7 +221,7 @@ function FarmCard({ farm, active, onActivate, onDelete, onSaved }: {
         location: location.trim(),
         farm_size_acres: parseFloat(size) || 1,
         farming_type: farmingType,
-        soil: { ...(farm.soil ?? {}), type: soilType },
+        soil: { type: soilType, ...soilExtra },
         crops: crops.filter((c) => c.name.trim()),
         inputs_on_hand: materials,
       });
@@ -273,6 +279,10 @@ function FarmCard({ farm, active, onActivate, onDelete, onSaved }: {
               {SOIL_TYPES.map((s) => <option key={s} value={s}>{t(s)}</option>)}
             </select>
           </Field>
+        </div>
+
+        <div className="mt-4">
+          <SoilCardUpload initial={farm.soil ?? {}} onExtracted={setSoilExtra} />
         </div>
 
         <div className="mt-4">
@@ -360,6 +370,7 @@ function AddFarm({ onAdded, defaultLocation }: { onAdded: () => void; defaultLoc
   const [size, setSize] = useState("1");
   const [farmingType, setFarmingType] = useState("Natural Farming");
   const [soilType, setSoilType] = useState("Loamy");
+  const [soilCard, setSoilCard] = useState<Record<string, any>>({});
   const [crops, setCrops] = useState<string[]>([]);
   const [cropInput, setCropInput] = useState("");
   const [materials, setMaterials] = useState<string[]>([]);
@@ -369,7 +380,7 @@ function AddFarm({ onAdded, defaultLocation }: { onAdded: () => void; defaultLoc
 
   function reset() {
     setName(""); setLocation(defaultLocation); setSize("1");
-    setFarmingType("Natural Farming"); setSoilType("Loamy");
+    setFarmingType("Natural Farming"); setSoilType("Loamy"); setSoilCard({});
     setCrops([]); setCropInput(""); setMaterials([]); setMaterialInput("");
     setErr(null);
   }
@@ -398,7 +409,7 @@ function AddFarm({ onAdded, defaultLocation }: { onAdded: () => void; defaultLoc
         farm_size_acres: parseFloat(size) || 1,
         farming_type: farmingType,
         crops: crops.map((n) => ({ name: n })),
-        soil: { type: soilType },
+        soil: { type: soilType, ...soilCard },
         inputs_on_hand: materials,
       });
       reset();
@@ -445,6 +456,8 @@ function AddFarm({ onAdded, defaultLocation }: { onAdded: () => void; defaultLoc
             </select>
           </Field>
         </div>
+
+        <SoilCardUpload onExtracted={setSoilCard} />
 
         <Field label={t("Crops")}>
           <div className="flex gap-2">

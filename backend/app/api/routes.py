@@ -393,10 +393,29 @@ async def translate_ui(req: TranslateRequest) -> dict[str, Any]:
 
 
 # ---------- soil health card ----------
+@router.post(
+    "/soil-card/read",
+    dependencies=[Depends(user_rate_limit(settings.limit_soil_card, "soil_card"))],
+)
+async def soil_card_read(
+    file: UploadFile = File(...), user: str = Depends(get_current_user)
+) -> dict[str, Any]:
+    """Extract soil values from a card photo WITHOUT writing to a farm.
+
+    Used while adding a farm - before it exists - so the values can be baked into
+    the new farm's `soil` on create (and thus into every future prompt). Auth only,
+    no active farm required.
+    """
+    data_url = await read_image_data_url(file)
+    extracted = await flows.extract_soil_values(data_url)
+    return {"extracted": extracted, "soil": flows.soil_values_from(extracted)}
+
+
 @router.post("/soil-card", dependencies=[Depends(user_rate_limit(settings.limit_soil_card, "soil_card"))])
 async def soil_card(
     file: UploadFile = File(...), farm_id: str = Depends(get_active_farm)
 ) -> dict[str, Any]:
+    """Read a soil card into the ACTIVE farm (kept for updating an existing farm)."""
     data_url = await read_image_data_url(file)
     result = await flows.read_soil_card(data_url, farm_id)
     flows.invalidate_dashboard(farm_id)  # updated soil data changes the farm twin

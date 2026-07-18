@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/primitives";
 import { motion } from "framer-motion";
 import { Plant, CircleNotch, Plus, X, Warning, User, MapPin } from "@phosphor-icons/react";
 import { getStoredLang } from "@/lib/i18n";
+import { SoilCardUpload } from "@/components/farm/soil-card-upload";
 import { useT } from "@/lib/i18n-runtime";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -34,6 +35,7 @@ export default function OnboardingPage() {
   const [size, setSize] = useState("2");
   const [farmingType, setFarmingType] = useState("Natural Farming");
   const [soilType, setSoilType] = useState("Loamy");
+  const [soilCard, setSoilCard] = useState<Record<string, any>>({});
   const [crops, setCrops] = useState<string[]>(["Tomato"]);
   const [cropInput, setCropInput] = useState("");
   const [inputs, setInputs] = useState<string[]>(["Jeevamrut", "Neem oil"]);
@@ -105,7 +107,8 @@ export default function OnboardingPage() {
       farm_size_acres: parseFloat(size) || 1,
       farming_type: farmingType,
       crops: crops.map((name) => ({ name })),
-      soil: { type: soilType },
+      // Card values (pH, N-P-K…) plus the chosen type; card type wins if present.
+      soil: { type: soilType, ...soilCard },
       inputs_on_hand: inputs,
     };
     try {
@@ -211,6 +214,8 @@ export default function OnboardingPage() {
                   {SOIL_TYPES.map((st) => <option key={st} value={st}>{t(st)}</option>)}
                 </select>
               </Field>
+
+              <SoilCardUpload onExtracted={setSoilCard} />
 
               <Field label={t("Crops")} hint={t("Use names that match mandi listings (e.g. Tomato, Wheat, Onion)")}>
                 <ChipInput items={crops} value={cropInput} onValue={setCropInput} onAdd={addCrop}

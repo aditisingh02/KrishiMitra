@@ -259,7 +259,9 @@ export const api = {
   croppingDesign: (land: string, location: string, goals: string) =>
     jpost<{ design: any }>("/api/cropping-design", { land, location, goals }),
   diagnose: (file: File, note = "") => upload<{ diagnosis: any }>("/api/diagnose", file, { note }),
-  soilCard: (file: File) => upload<{ soil: any; extracted: any }>("/api/soil-card", file),
+  /** Extract soil values from a card photo (no farm write) - used while adding a farm. */
+  readSoilCard: (file: File) =>
+    upload<{ soil: Record<string, any>; extracted: any }>("/api/soil-card/read", file),
   calendar: () =>
     jget<{ cycles: CropCycle[]; general_tasks: CalendarTask[]; today: string }>("/api/calendar"),
   createCycle: (crop: string, sown_on: string) =>
