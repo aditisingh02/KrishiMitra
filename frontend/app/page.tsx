@@ -39,15 +39,11 @@ const AGENTS = [
   { icon: Plant, name: "Action Planner", desc: "Synthesises one clear daily plan" },
 ];
 
-// keyword-matched real photos (loremflickr); lock keeps each image stable
-const img = (kw: string, lock: number, w = 600, h = 400) =>
-  `https://loremflickr.com/${w}/${h}/${kw}?lock=${lock}`;
-
 const FEATURES = [
-  { icon: Microphone, img: img("farmer,phone", 31), title: "Voice-first, in Hindi", body: "Farmers speak naturally. The system listens, reasons across agents, and answers aloud in their language." },
-  { icon: Scan, img: img("plant,leaf", 32), title: "Diagnose from a photo", body: "Snap a leaf. The vision agent names the disease, its severity, and a natural cure." },
-  { icon: ShieldWarning, img: img("storm,field", 33), title: "Warns before you ask", body: "It watches weather and history, and flags fungal risk before it spreads." },
-  { icon: Translate, img: img("indian,farmer", 34), title: "No jargon", body: "Plain, specific guidance written the way a farmer would explain it to a neighbour." },
+  { icon: Microphone, img: "/landing/indian-farmer.png", title: "Voice-first, in Hindi", body: "Farmers speak naturally. The system listens, reasons across agents, and answers aloud in their language." },
+  { icon: Scan, img: "/landing/diseased.jpeg", title: "Diagnose from a photo", body: "Snap a leaf. The vision agent names the disease, its severity, and a natural cure." },
+  { icon: ShieldWarning, img: "/landing/farm_weather.jpg", title: "Warns before you ask", body: "It watches weather and history, and flags fungal risk before it spreads." },
+  { icon: Translate, img: "/landing/farmer-nojargon.jpg", title: "No jargon", body: "Plain, specific guidance written the way a farmer would explain it to a neighbour." },
 ];
 
 // natural-farming practices the system actually prescribes
@@ -62,16 +58,16 @@ const PRACTICES = [
 
 // crops the agents are tuned for (prices, diseases, calendars)
 const CROPS = [
-  { name: "Tomato", img: img("tomato,plant", 1, 500, 400) },
-  { name: "Wheat", img: img("wheat,field", 2, 500, 400) },
-  { name: "Onion", img: img("onion,harvest", 3, 500, 400) },
-  { name: "Turmeric", img: img("turmeric,root", 4, 500, 400) },
-  { name: "Banana", img: img("banana,plantation", 5, 500, 400) },
-  { name: "Cowpea", img: img("beans,legume", 6, 500, 400) },
-  { name: "Moringa", img: img("moringa,tree", 7, 500, 400) },
-  { name: "Potato", img: img("potato,farm", 8, 500, 400) },
-  { name: "Chilli", img: img("chilli,pepper", 9, 500, 400) },
-  { name: "Sugarcane", img: img("sugarcane,field", 10, 500, 400) },
+  { name: "Tomato", img: "/landing/tomato.jpg" },
+  { name: "Wheat", img: "/landing/wheat.jpg" },
+  { name: "Onion", img: "/landing/onion.jpg" },
+  { name: "Turmeric", img: "/landing/turmeric.jpeg" },
+  { name: "Banana", img: "/landing/banana.avif" },
+  { name: "Cowpea", img: "/landing/cowpea.webp" },
+  { name: "Moringa", img: "/landing/moringa.jpeg" },
+  { name: "Potato", img: "/landing/potato.jpg" },
+  { name: "Chilli", img: "/landing/chilli.jpeg" },
+  { name: "Sugarcane", img: "/landing/sugarcane.webp" },
 ];
 
 export default function Landing() {
@@ -231,53 +227,26 @@ export default function Landing() {
         </section>
       </AuroraBackground>
 
-      {/* ---------------- AGENT ARCHITECTURE ---------------- */}
-      <section className="mx-auto max-w-6xl px-6 py-24 md:py-32">
-        <div className="mb-14 max-w-2xl">
-          <p className="overline mb-3">{tr("Not one model - a team")}</p>
-          <h2 className="display text-3xl text-ink md:text-4xl">
-            {tr("Eight agents, one action plan.")}
-          </h2>
-          <p className="mt-3 text-[15px] leading-relaxed text-muted">
-            {tr("A Planner breaks every request into a task graph, dispatches specialists in parallel, and an Action Planner synthesises a single prioritised answer.")}
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
-          {AGENTS.map((agent, i) => {
-            const Icon = agent.icon;
-            return (
-              <motion.div
-                key={agent.name}
-                initial={{ opacity: 0, y: 14 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: (i % 4) * 0.06 }}
-                className="bg-surface p-6"
-              >
-                <Icon className="h-5 w-5 text-field-600" weight="regular" />
-                <h3 className="mt-4 text-[15px] font-medium text-ink">{tr(agent.name)}</h3>
-                <p className="mt-1.5 text-sm leading-relaxed text-muted">{tr(agent.desc)}</p>
-              </motion.div>
-            );
-          })}
-        </div>
-      </section>
-
       {/* ---------------- NATURAL FARMING PRACTICES ---------------- */}
-      <section className="border-y border-line bg-bone/40">
-        <div className="mx-auto max-w-6xl px-6 py-24 md:py-32">
+      <section className="relative border-y border-line">
+        {/* farm photo backdrop, darkened left→right so the heading reads in light text */}
+        <div className="absolute inset-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/landing/farm_weather.jpg" alt="" className="h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-r from-ink/80 via-ink/55 to-ink/25" />
+        </div>
+        <div className="relative z-10 mx-auto max-w-6xl px-6 py-24 md:py-32">
           <div className="mb-14 flex flex-wrap items-end justify-between gap-4">
             <div className="max-w-2xl">
-              <p className="overline mb-3">{tr("Rooted in natural farming")}</p>
-              <h2 className="display text-3xl text-ink md:text-4xl">
+              <p className="overline mb-3 text-paper/60">{tr("Rooted in natural farming")}</p>
+              <h2 className="display text-3xl text-paper md:text-4xl">
                 {tr("Real practices, not chemicals.")}
               </h2>
-              <p className="mt-3 text-[15px] leading-relaxed text-muted">
+              <p className="mt-3 text-[15px] leading-relaxed text-paper/85">
                 {tr("Every remedy the agents prescribe comes from Subhash Palekar Natural Farming and ICAR practice - grounded in a curated knowledge base, never invented.")}
               </p>
             </div>
-            <Leaf className="hidden h-16 w-16 text-field-600/30 md:block" weight="thin" />
+            <Leaf className="hidden h-16 w-16 text-paper/25 md:block" weight="thin" />
           </div>
 
           <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
@@ -404,6 +373,39 @@ export default function Landing() {
             </Link>
           </SignedIn>
         </motion.div>
+      </section>
+
+      {/* ---------------- AGENT ARCHITECTURE ---------------- */}
+      <section className="mx-auto max-w-6xl px-6 py-24 md:py-32">
+        <div className="mb-14 max-w-2xl">
+          <p className="overline mb-3">{tr("Not one model - a team")}</p>
+          <h2 className="display text-3xl text-ink md:text-4xl">
+            {tr("Eight agents, one action plan.")}
+          </h2>
+          <p className="mt-3 text-[15px] leading-relaxed text-muted">
+            {tr("A Planner breaks every request into a task graph, dispatches specialists in parallel, and an Action Planner synthesises a single prioritised answer.")}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
+          {AGENTS.map((agent, i) => {
+            const Icon = agent.icon;
+            return (
+              <motion.div
+                key={agent.name}
+                initial={{ opacity: 0, y: 14 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.5, delay: (i % 4) * 0.06 }}
+                className="bg-surface p-6"
+              >
+                <Icon className="h-5 w-5 text-field-600" weight="regular" />
+                <h3 className="mt-4 text-[15px] font-medium text-ink">{tr(agent.name)}</h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-muted">{tr(agent.desc)}</p>
+              </motion.div>
+            );
+          })}
+        </div>
       </section>
 
       <footer className="border-t border-line">
