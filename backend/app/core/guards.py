@@ -61,6 +61,13 @@ _DOMAIN_RE = re.compile(
 )
 
 
+OFF_TOPIC_MESSAGE = (
+    "I'm your farming assistant - I can only help with crops, disease, soil, "
+    "weather, mandi prices, livestock and government farm schemes. Please ask me "
+    "something about your farm."
+)
+
+
 class GuardRejection(Exception):
     """Raised when input must not reach the agents."""
 
@@ -107,11 +114,7 @@ def check_query(text: str) -> str:
         raise GuardRejection("empty", "Please ask a question about your crops or farm.")
 
     if is_off_topic(raw):
-        raise GuardRejection(
-            "off_topic",
-            "I'm your farming assistant - I can help with crops, disease, soil, "
-            "weather, mandi prices and government schemes. Please ask me about your farm.",
-        )
+        raise GuardRejection("off_topic", OFF_TOPIC_MESSAGE)
 
     if is_injection(raw):
         logger.warning("prompt-injection pattern neutralised in input")

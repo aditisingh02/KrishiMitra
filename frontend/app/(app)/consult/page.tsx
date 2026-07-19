@@ -21,6 +21,7 @@ import {
   Check,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
+import { speak as tts } from "@/lib/voice";
 import { useT } from "@/lib/i18n-runtime";
 import { getStoredLang } from "@/lib/i18n";
 
@@ -136,13 +137,9 @@ export default function ConsultPage() {
     }
   }
 
-  function speak(text: string, ttsLocale: string) {
-    if (!text) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = ttsLocale;
-    u.rate = 0.95;
-    window.speechSynthesis.speak(u);
+  // Auto-read respects the global mute; a manual tap forces playback.
+  function speak(text: string, ttsLocale: string, force = false) {
+    tts(text, ttsLocale, { force });
   }
 
   async function submit(q?: string) {
@@ -317,6 +314,7 @@ export default function ConsultPage() {
                       speak(
                         answerText(result, lang) ?? "",
                         lang === "en" ? "en-IN" : result.language?.tts || sttLocale(),
+                        true, // explicit tap → play even if auto-voice is muted
                       )
                     }
                     className="flex h-8 w-8 items-center justify-center rounded-md bg-bone text-charcoal hover:bg-line"

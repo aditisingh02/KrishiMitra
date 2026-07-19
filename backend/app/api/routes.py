@@ -333,7 +333,7 @@ async def diagnose(
     # After the response: (1) store every scan in the chat history (incl. healthy
     # ones - unconditional, unlike persist_diagnosis), (2) record the disease on the
     # farm twin + embed to memory only when there's a real issue.
-    if isinstance(diagnosis, dict) and not diagnosis.get("_parse_error"):
+    if isinstance(diagnosis, dict) and not diagnosis.get("_parse_error") and not diagnosis.get("not_crop"):
         background.add_task(flows.persist_interaction_diagnose, diagnosis, farm_id)
     if flows.needs_persisting(diagnosis):
         background.add_task(flows.persist_diagnosis, diagnosis, farm_id)
@@ -767,7 +767,8 @@ async def _diagnose_and_push(
         diag = await flows.diagnose_image(data_url, farm_id, note)
         # Store every scan in history (incl. healthy), same as the web route.
         if isinstance(diag, dict) and not diag.get("_parse_error"):
-            await flows.persist_interaction_diagnose(diag, farm_id)
+            if not diag.get("not_crop"):
+                await flows.persist_interaction_diagnose(diag, farm_id)
         if flows.needs_persisting(diag):
             await flows.persist_diagnosis(diag, farm_id)  # already backgrounded; just await
 
@@ -810,6 +811,10 @@ def _format_diagnosis(diag: dict[str, Any]) -> str:
         if diag.get("explanation_local"):
             out += f"\n\n{diag['explanation_local']}"
         return out
+    if diag.get("not_crop"):
+        return diag.get("explanation_local") or (
+            "That doesn't look like a crop photo. Please send a clear photo of the affected leaf or plant."
+        )
     return "I couldn't read that photo clearly. Please send a closer, well-lit photo of the affected leaf."
 
 

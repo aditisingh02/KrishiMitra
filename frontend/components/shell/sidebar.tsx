@@ -13,6 +13,7 @@ import {
 import { UserButton } from "@clerk/nextjs";
 import { NotificationBell } from "@/components/shell/notifications";
 import { AppLanguageSelect } from "@/components/shell/app-language-select";
+import { VoiceToggle } from "@/components/shell/voice-toggle";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -99,6 +100,7 @@ export function Sidebar() {
 
       <div className="mt-auto space-y-3">
         <AppLanguageSelect className="w-full justify-between" />
+        <VoiceToggle className="w-full justify-center" />
 
         {/* Active farm + switcher. The farm name is the heading; the whole card
             is a picker when the farmer has more than one farm. */}

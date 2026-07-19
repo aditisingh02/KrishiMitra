@@ -17,6 +17,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n-runtime";
 import { getStoredLang } from "@/lib/i18n";
+import { speak } from "@/lib/voice";
 
 const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 
@@ -78,7 +79,7 @@ export default function DiagnosePage() {
       const res = await api.diagnose(file, note);
       setResult(res.diagnosis);
       const d = res.diagnosis;
-      if (d && !d._parse_error) {
+      if (d && !d._parse_error && !d.not_crop) {
         const tr = d.natural_treatment || {};
         setHistory((h) => [
           {
@@ -97,10 +98,9 @@ export default function DiagnosePage() {
           ...h,
         ]);
       }
+      // Auto-read the diagnosis aloud (respects the global voice mute).
       if (res.diagnosis?.explanation_local) {
-        const u = new SpeechSynthesisUtterance(res.diagnosis.explanation_local);
-        u.lang = res.diagnosis.language?.tts || `${getStoredLang() || "hi"}-IN`;
-        window.speechSynthesis.speak(u);
+        speak(res.diagnosis.explanation_local, res.diagnosis.language?.tts || `${getStoredLang() || "hi"}-IN`);
       }
     } catch (e) {
       if (e instanceof ApiError) {
@@ -211,7 +211,20 @@ export default function DiagnosePage() {
 
       {/* result */}
       <AnimatePresence>
-        {result && (
+        {result?.not_crop && (
+          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+            <Card interactive={false} className="border-pale-yellow bg-pale-yellow/40">
+              <div className="flex items-start gap-3">
+                <Warning className="mt-0.5 h-5 w-5 shrink-0 text-pale-yellowink" weight="bold" />
+                <p className="text-[15px] leading-relaxed text-charcoal">
+                  {result.explanation_local || t("That doesn't look like a crop photo. Please send a clear photo of the affected leaf, plant or crop.")}
+                </p>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+
+        {result && !result.not_crop && (
           <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
             <Card interactive={false}>
               <div className="flex items-start justify-between gap-4">
@@ -282,11 +295,13 @@ export default function DiagnosePage() {
                 <div className="mb-2 flex items-center justify-between">
                   <span className="overline">{result.language?.native ?? t("For the farmer")}</span>
                   <button
-                    onClick={() => {
-                      const u = new SpeechSynthesisUtterance(result.explanation_local);
-                      u.lang = result.language?.tts || `${getStoredLang() || "hi"}-IN`;
-                      window.speechSynthesis.speak(u);
-                    }}
+                    onClick={() =>
+                      speak(
+                        result.explanation_local,
+                        result.language?.tts || `${getStoredLang() || "hi"}-IN`,
+                        { force: true }, // explicit tap → play even if muted
+                      )
+                    }
                     className="flex h-8 w-8 items-center justify-center rounded-md bg-bone text-charcoal hover:bg-line"
                   >
                     <SpeakerHigh className="h-4 w-4" />

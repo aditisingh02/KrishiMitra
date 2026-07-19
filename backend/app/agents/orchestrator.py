@@ -32,8 +32,10 @@ async def plan_tasks(query: str, farm_ctx: str) -> dict[str, Any]:
     result = await fireworks.chat_json(
         prompts.PLANNER, user, model=settings.model_planner, max_tokens=800
     )
+    # Off-topic: default True so a parse hiccup never wrongly rejects a real question.
+    result["on_topic"] = result.get("on_topic", True) is not False
     tasks = [t for t in result.get("tasks", []) if t in VALID_TASKS]
-    if not tasks:  # safe default
+    if not tasks and result["on_topic"]:  # safe default only for on-topic requests
         tasks = ["crop_health", "natural_farming"]
     result["tasks"] = tasks
     return result
@@ -144,6 +146,13 @@ async def consult(query: str, farm_id: str) -> dict[str, Any]:
     fenced = guards.fence(query)
 
     plan = await plan_tasks(fenced, farm_ctx)
+
+    # Farm-only scope: the Planner (which already read the question) flags anything
+    # not about farming. Refuse before spending the specialist + synthesis calls.
+    if not plan.get("on_topic", True):
+        logger.info("consult off-topic for farm %s: %r", farm_id, query[:80])
+        raise guards.GuardRejection("off_topic", guards.OFF_TOPIC_MESSAGE)
+
     tasks = plan["tasks"]
     logger.info("Planner chose: %s", tasks)
 

@@ -49,6 +49,31 @@ async def test_parse_error_plan_falls_back(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_planner_flags_off_topic(monkeypatch):
+    """A non-farm question the planner marks off_topic → no default tasks."""
+
+    async def fake_chat_json(system, user, **kwargs):
+        return {"on_topic": False, "tasks": []}
+
+    monkeypatch.setattr(orchestrator.fireworks, "chat_json", fake_chat_json)
+    plan = await orchestrator.plan_tasks("who won the cricket match?", "ctx")
+    assert plan["on_topic"] is False
+    assert plan["tasks"] == [], "off-topic must NOT get the crop_health default"
+
+
+@pytest.mark.asyncio
+async def test_missing_on_topic_defaults_true(monkeypatch):
+    """A parse hiccup must never wrongly reject a real farm question."""
+
+    async def fake_chat_json(system, user, **kwargs):
+        return {"tasks": ["market"]}  # no on_topic field
+
+    monkeypatch.setattr(orchestrator.fireworks, "chat_json", fake_chat_json)
+    plan = await orchestrator.plan_tasks("sell my onions?", "ctx")
+    assert plan["on_topic"] is True
+
+
+@pytest.mark.asyncio
 async def test_valid_tasks_preserved(monkeypatch):
     async def fake_chat_json(system, user, **kwargs):
         return {"tasks": sorted(orchestrator.VALID_TASKS)}

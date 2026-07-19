@@ -151,6 +151,18 @@ async def diagnose_image(image_data_url: str, farm_id: str, note: str = "") -> d
 
     if isinstance(result, dict):
         result["language"] = lang
+        # Image relevance guard: the vision model flags non-crop photos (a person,
+        # document, vehicle, food dish…). Don't surface an invented diagnosis.
+        if result.get("is_crop_image") is False and not result.get("_parse_error"):
+            logger.info("diagnose rejected non-crop image for farm %s", farm_id)
+            return {
+                "not_crop": True,
+                "language": lang,
+                "explanation_local": (
+                    "That doesn't look like a crop photo. Please send a clear photo of "
+                    "the affected leaf, plant or crop and I'll diagnose it."
+                ),
+            }
         if note:
             result["_note"] = note  # carried into the history row
         return result
