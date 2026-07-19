@@ -27,6 +27,7 @@ import { LanguageSelect } from "@/components/ui/language-select";
 import { landingCopy, getStoredLang, setStoredLang } from "@/lib/i18n";
 import { useT } from "@/lib/i18n-runtime";
 import { api } from "@/lib/api";
+import { WhatsAppCTA } from "@/components/shell/whatsapp-cta";
 
 const AGENTS = [
   { icon: Brain, name: "Planner", desc: "Routes each query to the right specialists" },
@@ -215,6 +216,9 @@ export default function Landing() {
                 </Button>
               </Link>
             </SignedIn>
+            {/* Works signed-in or not: opens WhatsApp with the sandbox join code
+                prefilled. Renders nothing if the server has no WhatsApp configured. */}
+            <WhatsAppCTA />
           </motion.div>
 
           {/* stats */}

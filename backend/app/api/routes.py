@@ -586,6 +586,47 @@ def _mask_phone(digits: str) -> str:
     return f"•••••• {digits[-4:]}" if len(digits) >= 4 else "••••••"
 
 
+def _whatsapp_number_digits() -> str | None:
+    """The bare digits of the Twilio WhatsApp sender, e.g. '14155238886'.
+
+    Used to build a wa.me deep link. Returns None if no sender is configured.
+    """
+    raw = (settings.twilio_whatsapp_from or "").replace("whatsapp:", "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits or None
+
+
+def _whatsapp_join_link() -> str | None:
+    """A one-tap wa.me link that opens WhatsApp to the KrishiMitra number.
+
+    On the Twilio sandbox we prefill the 'join <code>' opt-in message so the
+    farmer only has to hit send. Off the sandbox (no join code) it just opens a
+    chat. Returns None when no number is configured.
+    """
+    digits = _whatsapp_number_digits()
+    if not digits:
+        return None
+    code = (settings.twilio_sandbox_join_code or "").strip()
+    if code:
+        from urllib.parse import quote
+
+        return f"https://wa.me/{digits}?text={quote(f'join {code}')}"
+    return f"https://wa.me/{digits}"
+
+
+@router.get("/whatsapp/info")
+async def whatsapp_info() -> dict[str, Any]:
+    """Public: the WhatsApp number + one-tap join link for unauthenticated pages
+    (the landing page). Nothing here is secret - the sandbox join code is meant to
+    be shared so farmers can opt in."""
+    return {
+        "configured": notify.configured(),
+        "number": _whatsapp_number_digits(),
+        "sandbox_join_code": settings.twilio_sandbox_join_code or None,
+        "join_link": _whatsapp_join_link(),
+    }
+
+
 @router.get("/whatsapp/status")
 async def whatsapp_status(user: str = Depends(get_current_user)) -> dict[str, Any]:
     """Whether the farmer can receive WhatsApp alerts, and why not if they can't.
@@ -604,6 +645,8 @@ async def whatsapp_status(user: str = Depends(get_current_user)) -> dict[str, An
         "provider_configured": notify.configured(),
         "phone_masked": _mask_phone(phone) if phone else None,
         "sandbox_join_code": settings.twilio_sandbox_join_code or None,
+        "number": _whatsapp_number_digits(),
+        "join_link": _whatsapp_join_link(),
     }
 
 

@@ -3,8 +3,9 @@
 Resource: "Current Daily Price of Various Commodities from Various Markets".
 Requires DATA_GOV_API_KEY. Raises ExternalDataError on missing key / failure.
 
-Agmarknet has no price forecast, so we report only real values: latest modal
-price and the change vs the earliest record we have for that commodity+market.
+Agmarknet's daily resource is a single-day snapshot (no time series), so we report
+only real values: today's modal price at each reporting mandi, the spread across
+markets, the best place to sell, and the local rate vs the regional average.
 
 The upstream is free but flaky - usually ~0.5s, but it intermittently times out
 completely. To keep the dashboard from blanking on a single slow call we (1) fetch
@@ -100,7 +101,15 @@ async def _crop_item(client: httpx.AsyncClient, crop: str, state: str | None, ke
         records = await _fetch_commodity(client, crop, state, key)
         if not records and state:  # widen to all-India if nothing in state
             records = await _fetch_commodity(client, crop, None, key)
-        item = _summarize_crop(crop, records)
+        elif state:
+            # This dataset is a single-day snapshot, so our "history" is the spread of
+            # prices across the mandis reporting today. If the farmer's state has fewer
+            # than two markets, there's nothing to compare (and no line to draw), so
+            # enrich with all-India rows.
+            distinct = {(r.get("market") or r.get("district")) for r in records if r.get("modal_price")}
+            if len(distinct) < 2:
+                records = records + await _fetch_commodity(client, crop, None, key)
+        item = _summarize_crop(crop, records, home_state=state)
     except httpx.HTTPError as e:
         if cached:
             logger.warning("market: %s fetch failed (%s); serving stale cache", crop, e)
@@ -131,51 +140,117 @@ async def get_prices(crops: list[str], state: str | None = None) -> dict[str, An
                 "Set your own free DATA_GOV_API_KEY in backend/.env."
             )
         raise ExternalDataError("No mandi prices found for your crops right now.")
+
+    # Persist today's snapshot per crop and attach the accumulated day-over-day
+    # trend. Best-effort: a history hiccup must never blank the live prices.
+    await asyncio.gather(*(_persist_and_attach_history(item, state) for item in out))
     return {"source": "agmarknet", "items": out}
 
 
-def _summarize_crop(crop: str, records: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _snapshot_date(arrival: str | None) -> str:
+    d = _parse_date(arrival or "")
+    return (d if d != datetime.min else datetime.now()).strftime("%Y-%m-%d")
+
+
+async def _persist_and_attach_history(item: dict[str, Any], state: str | None) -> None:
+    """Store today's price for this crop+region, then attach the stored trend."""
+    from app.services import memory  # local import avoids an import cycle at module load
+
+    region = state or item.get("state") or "ALL"
+    date = _snapshot_date(item.get("arrival_date"))
+    try:
+        await memory.memory.record_price_snapshot(
+            item["crop"], region, date,
+            item["price_per_quintal"], item["min_price"], item["max_price"],
+            item.get("markets_count", 1),
+        )
+        hist = await memory.memory.price_history(item["crop"], region, days=14)
+    except Exception as e:
+        logger.warning("market: price history failed for %s: %s", item.get("crop"), e)
+        hist = []
+    item["trend_history"] = hist
+    # A real day-over-day change only exists once we have two distinct days stored.
+    if len(hist) >= 2 and hist[0]["price"]:
+        item["trend_change_pct"] = round(
+            (hist[-1]["price"] - hist[0]["price"]) / hist[0]["price"] * 100, 1
+        )
+        item["trend_days"] = len(hist)
+
+
+def _summarize_crop(
+    crop: str, records: list[dict[str, Any]], home_state: str | None = None
+) -> dict[str, Any] | None:
+    """Summarize one crop from a single-day, multi-market snapshot.
+
+    Agmarknet's "Current Daily Price" resource has no time series - every record is
+    from the same day across different mandis. So instead of a (fake) day-over-day
+    trend, we build a real *cross-market* comparison: today's price at each reporting
+    mandi, the spread (low -> high), the best place to sell, and how the farmer's
+    local rate sits against the regional average.
+    """
     rows = [r for r in records if r.get("modal_price")]
     if not rows:
         return None
-    rows.sort(key=lambda r: _parse_date(r.get("arrival_date", "")))
 
-    latest = rows[-1]
-    market = latest.get("market") or latest.get("district") or "local mandi"
-    current = float(latest["modal_price"])
-
-    # real history (dedup by date, keep last per day)
-    history: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    # One entry per market (if a market lists several varieties, keep the highest modal).
+    by_market: dict[str, dict[str, Any]] = {}
     for r in rows:
-        d = r.get("arrival_date", "")
-        if d in seen:
+        name = (r.get("market") or r.get("district") or "").strip()
+        if not name:
             continue
-        seen.add(d)
-        history.append({"date": _parse_date(d).strftime("%Y-%m-%d"), "price": round(float(r["modal_price"]))})
-    history = history[-7:]
+        price = round(float(r["modal_price"]))
+        prev = by_market.get(name)
+        if prev is None or price > prev["price"]:
+            by_market[name] = {"market": name, "price": price, "state": r.get("state")}
+    markets = list(by_market.values())
+    if not markets:
+        return None
 
-    change_pct = 0.0
-    if len(history) >= 2 and history[0]["price"]:
-        change_pct = round((history[-1]["price"] - history[0]["price"]) / history[0]["price"] * 100, 1)
+    prices = [m["price"] for m in markets]
+    avg = sum(prices) / len(prices)
+    low, high = min(prices), max(prices)
+    best = max(markets, key=lambda m: m["price"])
+
+    # Representative "your area" price: prefer a market in the farmer's state, else the
+    # median across every reporting market (robust to one outlier mandi).
+    home = [m for m in markets if home_state and (m.get("state") or "").lower() == home_state.lower()]
+    pool = sorted(home or markets, key=lambda m: m["price"])
+    local = pool[len(pool) // 2]
+    current = local["price"]
+
+    # "change" is now the local price vs the regional average today (not over time).
+    change_pct = round((current - avg) / avg * 100, 1) if avg else 0.0
     trend = "rising" if change_pct > 1.5 else "falling" if change_pct < -1.5 else "stable"
+
+    # Chart series: every mandi's price today, sorted low -> high so the sparkline
+    # reads as the price spread across markets.
+    history = [
+        {"market": m["market"], "price": m["price"]}
+        for m in sorted(markets, key=lambda m: m["price"])
+    ]
+
+    if len(markets) >= 2 and best["price"] > current * 1.02:
+        gain = round((best["price"] - current) / current * 100)
+        advice = f"Best price today: ₹{best['price']}/quintal at {best['market']} - {gain}% above your local rate."
+    elif len(markets) >= 2:
+        advice = f"Prices even across {len(markets)} mandis today (₹{low}-₹{high}/quintal) - sell at convenience."
+    else:
+        advice = f"Only one mandi reporting today (₹{current}/quintal) - check back for more markets to compare."
 
     return {
         "crop": crop,
-        "mandi": market,
-        "state": latest.get("state"),
-        "arrival_date": latest.get("arrival_date"),
-        "price_per_quintal": round(current),
-        "min_price": round(float(latest.get("min_price", current))),
-        "max_price": round(float(latest.get("max_price", current))),
+        "mandi": local["market"],
+        "state": local.get("state"),
+        "arrival_date": rows[-1].get("arrival_date"),
+        "price_per_quintal": current,
+        "min_price": low,
+        "max_price": high,
+        "avg_price": round(avg),
         "change_pct": change_pct,
         "trend": trend,
+        "markets_count": len(markets),
+        "best_market": best["market"],
+        "best_price": best["price"],
         "history": history,
-        "advice": (
-            f"Up {change_pct}% recently - momentum is positive."
-            if trend == "rising"
-            else f"Down {abs(change_pct)}% recently - sell soon if you must."
-            if trend == "falling"
-            else "Prices steady - sell at convenience."
-        ),
+        "advice": advice,
     }

@@ -236,6 +236,33 @@ class Memory(Base):
     )
 
 
+class PriceSnapshot(Base):
+    """One day's mandi price for a commodity in a region - the market time series.
+
+    Agmarknet's daily API only ever returns *today's* prices, so we persist a
+    snapshot on every fetch to accumulate a real day-over-day history (nothing
+    upstream provides one). Global, not per-farm: mandi prices are public and
+    shared, so we key by region (state, or "ALL" for all-India) rather than farm.
+    One row per (commodity, region, day) - re-fetches on the same day upsert.
+    """
+
+    __tablename__ = "price_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    commodity: Mapped[str] = mapped_column(String, index=True)  # lowercased
+    state: Mapped[str] = mapped_column(String, default="ALL")  # region; "ALL" = all-India
+    date: Mapped[str] = mapped_column(String)  # ISO YYYY-MM-DD (sorts chronologically)
+    modal: Mapped[int] = mapped_column(Integer)  # representative modal price/quintal
+    low: Mapped[int] = mapped_column(Integer)  # cheapest reporting mandi that day
+    high: Mapped[int] = mapped_column(Integer)  # dearest reporting mandi that day
+    markets: Mapped[int] = mapped_column(Integer, default=1)  # mandis reporting
+    created_at: Mapped[str] = mapped_column(String, default=_now)
+
+    __table_args__ = (
+        Index("ix_price_snapshots_lookup", "commodity", "state", "date", unique=True),
+    )
+
+
 class FarmMemory:
     # ---------- profile (the farmer; keyed by Clerk user id) ----------
     async def get_profile(self, user_id: str) -> dict[str, Any] | None:
@@ -518,6 +545,70 @@ class FarmMemory:
                 )
             ).first()
         return row is not None
+
+    # ---------- market price history (global, day-over-day) ----------
+    async def record_price_snapshot(
+        self,
+        commodity: str,
+        state: str | None,
+        date: str,
+        modal: int,
+        low: int,
+        high: int,
+        markets: int,
+    ) -> None:
+        """Upsert today's mandi price for a commodity+region (idempotent per day)."""
+        region = (state or "ALL").strip() or "ALL"
+        commodity = commodity.strip().lower()
+        async with SessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(PriceSnapshot).where(
+                        PriceSnapshot.commodity == commodity,
+                        PriceSnapshot.state == region,
+                        PriceSnapshot.date == date,
+                    )
+                )
+            ).scalars().first()
+            if row is None:
+                s.add(
+                    PriceSnapshot(
+                        commodity=commodity,
+                        state=region,
+                        date=date,
+                        modal=modal,
+                        low=low,
+                        high=high,
+                        markets=markets,
+                        created_at=_now(),
+                    )
+                )
+            else:  # same-day re-fetch: keep the latest read
+                row.modal, row.low, row.high, row.markets = modal, low, high, markets
+            await s.commit()
+
+    async def price_history(
+        self, commodity: str, state: str | None, days: int = 14
+    ) -> list[dict[str, Any]]:
+        """The last `days` daily snapshots for a commodity+region, oldest first."""
+        region = (state or "ALL").strip() or "ALL"
+        commodity = commodity.strip().lower()
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(PriceSnapshot)
+                    .where(
+                        PriceSnapshot.commodity == commodity,
+                        PriceSnapshot.state == region,
+                    )
+                    .order_by(PriceSnapshot.date.desc())
+                    .limit(max(1, days))
+                )
+            ).scalars().all()
+        return [
+            {"date": r.date, "price": r.modal, "low": r.low, "high": r.high}
+            for r in reversed(rows)
+        ]
 
     # ---------- semantic long-term memory (pgvector) ----------
     async def add_memory(

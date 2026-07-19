@@ -92,6 +92,16 @@ export function WhatsAppLink() {
               </p>
             )}
 
+            {/* One-tap opt-in: opens WhatsApp with the join message prefilled. */}
+            {status.join_link && (
+              <a href={status.join_link} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block">
+                <Button size="sm">
+                  <WhatsappLogo className="h-4 w-4" weight="fill" />
+                  {status.sandbox_join_code ? t("Open WhatsApp & join") : t("Open WhatsApp")}
+                </Button>
+              </a>
+            )}
+
             {sent && (
               <p className="mt-2 flex items-center gap-1.5 text-sm text-pale-greenink">
                 <CheckCircle className="h-4 w-4" weight="fill" />

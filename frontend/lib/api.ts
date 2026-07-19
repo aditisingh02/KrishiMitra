@@ -139,6 +139,18 @@ export type WhatsAppStatus = {
   phone_masked: string | null;
   /** Twilio sandbox opt-in code, when the server is running on the sandbox. */
   sandbox_join_code: string | null;
+  /** Bare digits of the KrishiMitra WhatsApp number, or null if unconfigured. */
+  number: string | null;
+  /** One-tap wa.me link (prefills "join <code>" on the sandbox), or null. */
+  join_link: string | null;
+};
+
+/** Public WhatsApp opt-in info for unauthenticated pages (landing). */
+export type WhatsAppInfo = {
+  configured: boolean;
+  number: string | null;
+  sandbox_join_code: string | null;
+  join_link: string | null;
 };
 
 export type Notification = {
@@ -274,6 +286,7 @@ export const api = {
   deleteCycle: (id: number) => jpost<{ ok: boolean }>(`/api/calendar/cycles/${id}`, {}, "DELETE"),
   markHarvested: (id: number) => jpost<{ ok: boolean }>(`/api/calendar/cycles/${id}/harvested`, {}),
   whatsappStatus: () => jget<WhatsAppStatus>("/api/whatsapp/status"),
+  whatsappInfo: () => jget<WhatsAppInfo>("/api/whatsapp/info"),
   whatsappTest: () => jpost<{ sent: boolean; to: string }>("/api/whatsapp/test", {}),
   notifications: () => jget<{ items: Notification[]; unread: number }>("/api/notifications"),
   markRead: () => jpost<{ ok: boolean }>("/api/notifications/read", {}),
