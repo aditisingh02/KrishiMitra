@@ -791,11 +791,18 @@ async def _diagnose_and_push(
     a dropped reply looks like the app is broken.
     """
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        # Twilio's MediaUrl0 doesn't serve the image directly - it 302-redirects to
+        # the media CDN, so follow_redirects MUST be on (httpx defaults it off, which
+        # would leave us with an empty redirect body and a bogus "unreadable photo").
+        # httpx drops the Basic auth header on the cross-host hop, which is correct -
+        # the redirect target is already pre-signed.
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             r = await client.get(
                 media_url, auth=(settings.twilio_account_sid, settings.twilio_auth_token)
             )
         r.raise_for_status()
+        if not r.content:
+            raise ValueError(f"empty media body from Twilio (status {r.status_code})")
         if len(r.content) > settings.max_upload_bytes:
             await notify.send_whatsapp(
                 to_number, await notify.localize_text("That photo is too large. Please send a smaller image.", lang)
