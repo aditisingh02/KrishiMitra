@@ -106,34 +106,48 @@ export default function Landing() {
           >
             <source src="/hero.mp4" type="video/mp4" />
           </video>
+          {/* Mobile: more white so the headline stays legible over busy greenery. */}
           <div
-            className="absolute inset-0"
+            className="absolute inset-0 sm:hidden"
             style={{
               background:
                 "linear-gradient(to bottom, rgba(0,0,0,0.32) 0%, rgba(0,0,0,0.06) 14%, rgba(0,0,0,0) 24%), " +
-                "linear-gradient(to bottom, rgba(251,251,250,0.42) 0%, rgba(251,251,250,0.88) 32%, #FBFBFA 56%)",
+                "linear-gradient(to bottom, rgba(251,251,250,0.30) 0%, rgba(251,251,250,0.86) 34%, #FBFBFA 58%)",
+            }}
+          />
+          {/* Desktop: lighter wash so more of the farm image shows through. */}
+          <div
+            className="absolute inset-0 hidden sm:block"
+            style={{
+              background:
+                "linear-gradient(to bottom, rgba(0,0,0,0.32) 0%, rgba(0,0,0,0.06) 14%, rgba(0,0,0,0) 24%), " +
+                "linear-gradient(to bottom, rgba(251,251,250,0.12) 0%, rgba(251,251,250,0.68) 40%, #FBFBFA 66%)",
             }}
           />
         </div>
 
-        <nav className="relative z-10 mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
-          <div className="flex items-center gap-2.5">
+        {/* Navbar-sized black scrim so the logo/wordmark stay legible over the hero. */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-[5] h-24 bg-gradient-to-b from-black/45 via-black/20 to-transparent" />
+
+        <nav className="relative z-10 mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-5 sm:px-6 sm:py-6">
+          <div className="flex shrink-0 items-center gap-2.5">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo.png" alt="KrishiMitra" className="h-8 w-8 rounded-md object-contain" />
-            <span className="font-serif text-xl text-ink">KrishiMitra</span>
+            <span className="font-serif text-lg text-white drop-shadow-sm sm:text-xl">KrishiMitra</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <LanguageSelect value={lang} onChange={changeLang} />
+            {/* Auth CTAs only from sm+ — on mobile the hero buttons cover this. */}
             <SignedOut>
               <Link href="/sign-in" className="hidden sm:block">
                 <Button variant="ghost" size="sm">{t.signin}</Button>
               </Link>
-              <Link href="/sign-up">
+              <Link href="/sign-up" className="hidden sm:block">
                 <Button size="sm">{t.getstarted} <ArrowRight className="h-4 w-4" /></Button>
               </Link>
             </SignedOut>
             <SignedIn>
-              <Link href="/dashboard">
+              <Link href="/dashboard" className="hidden sm:block">
                 <Button variant="outline" size="sm">
                   {t.opendash} <ArrowRight className="h-4 w-4" />
                 </Button>

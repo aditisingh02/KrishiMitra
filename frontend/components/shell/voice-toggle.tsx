@@ -30,12 +30,12 @@ export function VoiceToggle({ className, iconOnly = false }: { className?: strin
         title={muted ? t("Voice off - tap to unmute") : t("Voice on - tap to mute")}
         aria-label={muted ? t("Unmute voice") : t("Mute voice")}
         className={cn(
-          "flex h-10 w-10 items-center justify-center rounded-lg transition-colors",
+          "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
           muted ? "text-faint" : "text-charcoal",
           className,
         )}
       >
-        <Icon className="h-5 w-5" weight={muted ? "regular" : "bold"} />
+        <Icon className="h-[18px] w-[18px]" weight={muted ? "regular" : "bold"} />
       </button>
     );
   }

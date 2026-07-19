@@ -149,7 +149,7 @@ export function Sidebar() {
 export function MobileNav() {
   const path = usePathname();
   return (
-    <nav className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-surface/90 px-1.5 py-1.5 shadow-lift backdrop-blur lg:hidden">
+    <nav className="fixed bottom-3 left-1/2 z-50 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-0.5 rounded-xl border border-line bg-surface/90 px-1 py-1 shadow-lift backdrop-blur lg:hidden">
       {NAV.map((item) => {
         const active = path === item.href;
         const Icon = item.icon;
@@ -158,18 +158,18 @@ export function MobileNav() {
             key={item.href}
             href={item.href}
             className={cn(
-              "flex h-10 w-10 items-center justify-center rounded-lg transition-colors",
+              "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
               active ? "bg-bone text-ink" : "text-faint"
             )}
           >
-            <Icon className="h-5 w-5" weight={active ? "bold" : "regular"} />
+            <Icon className="h-[18px] w-[18px]" weight={active ? "bold" : "regular"} />
           </Link>
         );
       })}
       {/* voice mute + account (tap avatar → Manage account / Sign out) */}
-      <span className="mx-0.5 h-6 w-px bg-line" />
+      <span className="mx-0.5 h-6 w-px shrink-0 bg-line" />
       <VoiceToggle iconOnly />
-      <div className="flex h-10 w-10 items-center justify-center">
+      <div className="flex h-9 w-9 items-center justify-center">
         <UserButton afterSignOutUrl="/" />
       </div>
     </nav>

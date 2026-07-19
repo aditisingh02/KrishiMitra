@@ -64,7 +64,9 @@ function buildSuggestions(crop: string | null): string[] {
   const base = crop
     ? CROP_TEMPLATES.map((s) => s.replace("{crop}", crop))
     : GENERIC_SUGGESTIONS;
-  return [...base, "What government schemes can I apply for?"].slice(0, 4);
+  // Dedupe: GENERIC_SUGGESTIONS already includes the schemes question, so a plain
+  // append would repeat it.
+  return Array.from(new Set([...base, "What government schemes can I apply for?"])).slice(0, 4);
 }
 
 export default function ConsultPage() {
@@ -221,8 +223,8 @@ export default function ConsultPage() {
               }
             }}
             rows={1}
-            placeholder={listening ? t("Listening…") : t("Ask about disease, weather, prices, schemes…")}
-            className="max-h-32 flex-1 resize-none bg-transparent py-2.5 text-[15px] text-ink placeholder:text-faint focus:outline-none"
+            placeholder={listening ? t("Listening…") : t("Ask about your farm…")}
+            className="min-h-[44px] max-h-32 flex-1 resize-none self-center bg-transparent py-3 text-[15px] leading-tight text-ink placeholder:text-faint focus:outline-none"
           />
           <Button onClick={() => submit()} disabled={loading || !query.trim()} className="h-11 w-11 !p-0">
             {loading ? <CircleNotch className="h-5 w-5 animate-spin" /> : <PaperPlaneRight className="h-5 w-5" weight="fill" />}
@@ -232,9 +234,9 @@ export default function ConsultPage() {
 
       {!result && !loading && (
         <div className="flex flex-wrap gap-2">
-          {suggestions.map((s) => (
+          {suggestions.map((s, i) => (
             <button
-              key={s}
+              key={`${i}-${s}`}
               onClick={() => submit(s)}
               className="rounded-md border border-line bg-surface px-3 py-1.5 text-xs text-muted transition-colors hover:border-faint/50 hover:text-charcoal"
             >
