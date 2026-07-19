@@ -166,8 +166,9 @@ export function MobileNav() {
           </Link>
         );
       })}
-      {/* account + logout (tap avatar → Manage account / Sign out) */}
+      {/* voice mute + account (tap avatar → Manage account / Sign out) */}
       <span className="mx-0.5 h-6 w-px bg-line" />
+      <VoiceToggle iconOnly />
       <div className="flex h-10 w-10 items-center justify-center">
         <UserButton afterSignOutUrl="/" />
       </div>
