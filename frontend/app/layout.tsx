@@ -15,9 +15,24 @@ const serif = Instrument_Serif({
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "KrishiMitra - Agentic Agronomy OS",
+  title: "KrishiMitra — Your AI Farming Assistant",
   description:
-    "A multilingual AI agronomist that diagnoses crops, predicts risk, and guides natural farming.",
+    "Snap a photo to spot crop disease, get natural farming advice, weather alerts and mandi prices — in Hindi or English, made for Indian farmers.",
+  openGraph: {
+    title: "KrishiMitra - Your AI Farming Assistant",
+    description:
+      "Snap a photo to spot crop disease, get natural farming advice, weather alerts and mandi prices — in Hindi or English, made for Indian farmers.",
+    siteName: "KrishiMitra",
+    type: "website",
+    images: [{ url: "/og.png", width: 1814, height: 1024, alt: "KrishiMitra — Your AI Farming Assistant" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "KrishiMitra - Your AI Farming Assistant",
+    description:
+      "Snap a photo to spot crop disease, get natural farming advice, weather alerts and mandi prices — in Hindi or English.",
+    images: ["/og.png"],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
